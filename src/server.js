@@ -36,11 +36,16 @@ app.get(
         );
     }
 
-    const locationId = await completeInstall(req.query.code);
+    const install = await completeInstall(req.query.code);
+    const covers =
+      install.scope === "company"
+        ? `Installed for the agency <code>${install.id}</code>, covering every sub-account.`
+        : `Connected to location <code>${install.id}</code>.`;
+
     res.send(
       `<body style="font:16px -apple-system,sans-serif;padding:48px;max-width:34rem">
          <h2>Voice AI Agent Optimizer installed</h2>
-         <p>Connected to location <code>${locationId}</code>.</p>
+         <p>${covers}</p>
          <p>Open the sub-account and choose <strong>Voice AI Optimizer</strong> from the left navigation.</p>
        </body>`,
     );
