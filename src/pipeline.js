@@ -1,6 +1,6 @@
 import * as store from "./store.js";
 import { getAgent, listCallLogs } from "./ghl.js";
-import { analyze, evaluate } from "./ai.js";
+import { analyze, evaluate, MODEL } from "./ai.js";
 
 // Runs are keyed per location and agent: one deployment serves many installs, and
 // a location may have several Voice AI agents whose results must not be confused
@@ -82,6 +82,9 @@ export async function run(auth, agentId) {
 
   const result = {
     generatedAt: new Date().toISOString(),
+    // Which model produced this. Scores are not comparable across models, so a
+    // cached run has to say what made it rather than leaving it to be inferred.
+    model: MODEL,
     agent,
     transcripts,
     analysis: { callOutcomes, framework, issuePatterns },

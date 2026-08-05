@@ -10,7 +10,7 @@ const client = new Anthropic();
 // Opus is the default because the analysis quality matters more than its cost here.
 // Overridable so a run can be moved to another model when one is under load, or when
 // a deployment wants a cheaper pass.
-const MODEL = process.env.ANTHROPIC_MODEL ?? "claude-opus-5";
+export const MODEL = process.env.ANTHROPIC_MODEL ?? "claude-opus-5";
 
 // Thinking is on by default on Opus 5 and counts against max_tokens, so these
 // requests stream to stay clear of HTTP timeouts.

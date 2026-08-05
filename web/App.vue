@@ -109,6 +109,13 @@ onMounted(async () => {
       </nav>
 
       <component :is="TABS.find(([id]) => id === activeTab)[2]" :run="run" />
+
+      <p class="provenance muted">
+        Analyzed {{ run.transcripts.length }} call transcripts with
+        <code>{{ run.model || "an unrecorded model" }}</code>
+        on {{ new Date(run.generatedAt).toLocaleString() }}. Scores are not comparable across
+        different models.
+      </p>
     </template>
   </div>
 </template>
@@ -196,5 +203,17 @@ header p {
   color: var(--accent);
   border-bottom-color: var(--accent);
   font-weight: 500;
+}
+
+.provenance {
+  margin: 28px 0 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.provenance code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
 }
 </style>
