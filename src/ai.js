@@ -11,7 +11,24 @@ const MODEL = "claude-opus-5";
 
 // Thinking is on by default on Opus 5 and counts against max_tokens, so these
 // requests stream to stay clear of HTTP timeouts.
-async function complete({ system, prompt, schema }) {
+//
+// A full pass is three of these calls over several minutes. The SDK retries a
+// request that fails before the stream opens, but an overload that arrives
+// mid-stream surfaces here — and losing the whole run to a transient error is
+// expensive enough to be worth one more attempt.
+async function complete(args, attempt = 1) {
+  try {
+    return await streamOnce(args);
+  } catch (err) {
+    const transient = err?.error?.error?.type === "overloaded_error" || err?.status >= 500;
+    if (!transient || attempt > 2) throw err;
+
+    await new Promise((resolve) => setTimeout(resolve, attempt * 5000));
+    return complete(args, attempt + 1);
+  }
+}
+
+async function streamOnce({ system, prompt, schema }) {
   const stream = client.messages.stream({
     model: MODEL,
     max_tokens: 32000,
@@ -242,7 +259,15 @@ tag it predicted. Prefer predicted whenever you are unsure.`;
  * Patches are never applied by string surgery — the patched pass receives the original
  * prompt plus the patch list and evaluates as if they were applied.
  */
-export function evaluate({ agent, testCases, transcripts, issuePatterns, patches, recommend }) {
+export function evaluate({
+  agent,
+  testCases,
+  transcripts,
+  issuePatterns,
+  patches,
+  configChanges,
+  recommend,
+}) {
   const schema = {
     type: "object",
     additionalProperties: false,
@@ -289,11 +314,24 @@ ${describeAgent(agent)}
 ${
   patches
     ? `
-## Pending patches — evaluate as if these are already applied
+## Pending prompt patches — evaluate as if these are already applied
 ${patches.map((p) => `### ${p.section} (${p.operation})\n${p.text}`).join("\n\n")}
 `
     : ""
-}
+}${
+    configChanges?.length
+      ? `
+## Pending configuration changes — evaluate as if these are already applied
+${configChanges.map((c) => `- [${c.category}] ${c.change}`).join("\n")}
+
+These are changes to the agent's setup rather than its wording — a wired action, a
+configured workflow, adjusted call settings, added knowledge base content. Judge the
+criteria they affect against the agent as it would behave with them in place. An agent
+that has been given a booking action can complete a booking; one that has only been told
+to stop claiming it booked something cannot.
+`
+      : ""
+  }
 # Real call transcripts
 
 ${describeTranscripts(transcripts)}
@@ -313,9 +351,9 @@ ${tc.successCriteria.map((c) => `- ${c}`).join("\n")}`,
 # Your task
 
 For every test case, return a verdict on every one of its criteria. Judge against the
-configuration above${patches ? " with the pending patches applied" : ""}. Copy each criterion
-back exactly as written, and tag each verdict observed or predicted as defined in your
-instructions.${
+configuration above${patches || configChanges?.length ? " with the pending changes applied" : ""}.
+Copy each criterion back exactly as written, and tag each verdict observed or predicted as
+defined in your instructions.${
     recommend
       ? `
 

@@ -43,8 +43,22 @@ function copyPatches() {
     </div>
   </template>
 
+  <template v-if="run.configChanges?.length">
+    <h2 class="section-title">Configuration changes in the after score</h2>
+    <div class="card">
+      <div class="cfg" v-for="(c, i) in run.configChanges" :key="i">
+        <span class="tag tag-warn">{{ c.category.replace("_", " ") }}</span>
+        <span>{{ c.change }}</span>
+      </div>
+    </div>
+    <p class="muted intro">
+      Scored alongside the prompt patches below, so the after figure reflects the whole proposed
+      agent — not only its wording.
+    </p>
+  </template>
+
   <div class="patch-head">
-    <h2 class="section-title">Proposed configuration patches</h2>
+    <h2 class="section-title">Proposed prompt patches</h2>
     <button class="btn btn-secondary" @click="copyPatches">
       {{ copied ? "Copied" : "Copy patches" }}
     </button>
@@ -112,6 +126,17 @@ function copyPatches() {
 }
 
 .flip + .flip {
+  border-top: 1px solid var(--border);
+}
+
+.cfg {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 0;
+}
+
+.cfg + .cfg {
   border-top: 1px solid var(--border);
 }
 

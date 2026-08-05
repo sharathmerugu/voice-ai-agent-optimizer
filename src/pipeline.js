@@ -58,11 +58,20 @@ export async function run(auth, agentId) {
     recommend: true,
   });
 
+  // Prompt and guardrail recommendations are delivered as prompt patches; the rest
+  // are changes to the agent's setup. Both have to reach the second evaluation, or
+  // the measured improvement would only ever reflect rewording — which is the thing
+  // this tool exists to move past.
+  const configChanges = baseline.recommendations.filter(
+    (r) => !["prompt", "guardrails"].includes(r.category),
+  );
+
   const patched = await evaluate({
     agent,
     testCases,
     transcripts,
     patches: baseline.patches,
+    configChanges,
   });
 
   const result = {
@@ -74,6 +83,7 @@ export async function run(auth, agentId) {
     baseline: { cases: baseline.cases, score: score(baseline.cases) },
     recommendations: baseline.recommendations,
     patches: baseline.patches,
+    configChanges,
     patched: { cases: patched.cases, score: score(patched.cases) },
     flipped: flippedCriteria(baseline.cases, patched.cases, testCases),
   };
