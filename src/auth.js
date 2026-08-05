@@ -42,9 +42,35 @@ async function requestToken(params) {
   return res.json();
 }
 
+/**
+ * The location a token belongs to.
+ *
+ * The token response is documented as carrying `locationId`, but does not always
+ * populate it. The access token is a JWT whose payload names the location in
+ * `authClassId`, so that is the authoritative source and the response field is
+ * only a fallback.
+ */
+function locationOf(token) {
+  try {
+    const claims = JSON.parse(
+      Buffer.from(token.access_token.split(".")[1], "base64url").toString("utf8"),
+    );
+    if (claims.authClassId) return claims.authClassId;
+  } catch {
+    // Not a JWT, or an unexpected shape — fall through to the response field.
+  }
+
+  if (token.locationId) return token.locationId;
+
+  throw new Error(
+    `Could not determine the location for this install. Token response fields: ${Object.keys(token).join(", ")}`,
+  );
+}
+
 function persist(token) {
   const store = readStore();
-  store[token.locationId] = {
+  const locationId = locationOf(token);
+  store[locationId] = {
     accessToken: token.access_token,
     refreshToken: token.refresh_token,
     // Refresh a minute early rather than racing the boundary.
@@ -52,7 +78,7 @@ function persist(token) {
     installedAt: new Date().toISOString(),
   };
   writeStore(store);
-  return token.locationId;
+  return locationId;
 }
 
 /** Exchanges the install code for a location-scoped token. Returns the locationId. */
