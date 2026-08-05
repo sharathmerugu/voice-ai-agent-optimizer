@@ -91,6 +91,14 @@ onMounted(async () => {
 
     <div v-if="error" class="banner">{{ error }}</div>
 
+    <div v-if="run?.newCallsSince && !busy" class="banner stale">
+      {{ run.newCallsSince }} new
+      {{ run.newCallsSince === 1 ? "call has" : "calls have" }} come in since this analysis. The
+      results below cover the {{ run.transcripts.length }} calls analyzed on
+      {{ new Date(run.generatedAt).toLocaleDateString() }}.
+      <button class="link" @click="load(true)">Re-run to include them</button>
+    </div>
+
     <div v-if="busy && !run" class="card centered">
       <div class="spinner" />
       <p class="muted">Ingesting transcripts and evaluating the agent…</p>
@@ -157,6 +165,22 @@ header p {
   border-radius: var(--radius);
   padding: 12px 14px;
   margin-bottom: 16px;
+}
+
+.banner.stale {
+  background: var(--warn-bg);
+  color: var(--warn);
+  border-color: #fde68a;
+}
+
+.link {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-decoration: underline;
+  cursor: pointer;
 }
 
 .centered {

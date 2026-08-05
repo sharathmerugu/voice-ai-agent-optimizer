@@ -125,7 +125,10 @@ if (!run.analysis.framework) {
     if (d.status === "strong" && issues.some((p) => p.severity === "high")) {
       inconsistencies.push(`${dimension}: scored strong while carrying a high-severity issue`);
     }
-    if (d.callsAffected > 0 && !issues.length) {
+    // `resolution` is an outcome rollup — whether callers got what they came for.
+    // Its causes are filed under the dimensions that produced them, so it can
+    // legitimately carry affected calls with no issue of its own.
+    if (d.callsAffected > 0 && !issues.length && dimension !== "resolution") {
       inconsistencies.push(`${dimension}: ${d.callsAffected} calls affected but no issue filed`);
     }
     if (d.status === "not_evaluated" && d.score !== null) {

@@ -1,6 +1,6 @@
 import * as store from "./store.js";
 import { getAgent, listCallLogs } from "./ghl.js";
-import { analyze, evaluate, MODEL } from "./ai.js";
+import { analyze, evaluate } from "./ai.js";
 
 // Runs are keyed per location and agent: one deployment serves many installs, and
 // a location may have several Voice AI agents whose results must not be confused
@@ -51,9 +51,14 @@ export async function run(auth, agentId) {
     );
   }
 
+  // Collects which models actually answered — a sustained outage on the preferred
+  // model degrades the analysis rather than failing it, and the run has to say so.
+  const usedModels = new Set();
+
   const { callOutcomes, framework, issuePatterns, testCases } = await analyze({
     agent,
     transcripts,
+    usedModels,
   });
 
   const baseline = await evaluate({
@@ -62,6 +67,7 @@ export async function run(auth, agentId) {
     transcripts,
     issuePatterns,
     recommend: true,
+    usedModels,
   });
 
   // Prompt and guardrail recommendations are delivered as prompt patches; the rest
@@ -78,13 +84,14 @@ export async function run(auth, agentId) {
     transcripts,
     patches: baseline.patches,
     configChanges,
+    usedModels,
   });
 
   const result = {
     generatedAt: new Date().toISOString(),
     // Which model produced this. Scores are not comparable across models, so a
     // cached run has to say what made it rather than leaving it to be inferred.
-    model: MODEL,
+    model: [...usedModels].join(" + "),
     agent,
     transcripts,
     analysis: { callOutcomes, framework, issuePatterns },

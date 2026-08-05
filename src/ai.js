@@ -1,54 +1,66 @@
 // The two LLM steps of the optimizer. Prompts live directly above the function
 // that sends them.
 //
-// Structured outputs guarantee the response matches the schema, so there is no
-// parse-and-retry path here: a malformed response is not a case we can reach.
+// Responses are schema-constrained, and checked for substance as well as shape —
+// an empty answer is schema-valid and must not reach the user as a result.
 import Anthropic from "@anthropic-ai/sdk";
 
 const client = new Anthropic();
 
-// Opus is the default because the analysis quality matters more than its cost here.
-// Overridable so a run can be moved to another model when one is under load, or when
-// a deployment wants a cheaper pass.
-export const MODEL = process.env.ANTHROPIC_MODEL ?? "claude-opus-5";
-
-// Thinking is on by default on Opus 5 and counts against max_tokens, so these
-// requests stream to stay clear of HTTP timeouts.
+// Opus first, Sonnet as a fallback.
 //
-// A full pass is three of these calls over several minutes. The SDK retries a
-// request that fails before the stream opens, but an overload that arrives
-// mid-stream surfaces here — and losing the whole run to a transient error is
-// expensive enough to be worth one more attempt.
-async function complete(args, attempt = 1) {
-  try {
-    const result = await streamOnce(args);
+// Opus is the better analyst by a wide margin on this workload — on the same four
+// transcripts it produced 11/27 -> 26/27 where Sonnet produced 9/21 -> 11/21 — and
+// at roughly $0.27 per analysis, cached per agent, the cost difference is not worth
+// the quality. But it is not always available: a run needs three sequential calls
+// over several minutes, and a single overloaded window loses all of it.
+//
+// So a sustained outage degrades the analysis instead of failing it, and the run
+// records which model actually produced it, because the scores are not comparable
+// between them.
+export const MODELS = process.env.ANTHROPIC_MODEL
+  ? [process.env.ANTHROPIC_MODEL]
+  : ["claude-opus-5", "claude-sonnet-5"];
 
-    // Structured outputs guarantee the response matches the schema, not that it
-    // says anything. Empty arrays are schema-valid, and the format does not
-    // support minimum-length constraints — so "did it actually answer" has to be
-    // checked here. A run that returns no findings and no test cases would
-    // otherwise flow downstream and be presented as a result.
-    const problem = args.validate?.(result);
-    if (problem) throw new Error(`Model returned an unusable response: ${problem}`);
+// The SDK retries a request that fails before the stream opens; an overload
+// arriving mid-stream surfaces here instead.
+const transient = (err) =>
+  err?.error?.error?.type === "overloaded_error" ||
+  err?.status >= 500 ||
+  err.message?.startsWith("Model returned an unusable response");
 
-    return result;
-  } catch (err) {
-    const transient =
-      err?.error?.error?.type === "overloaded_error" ||
-      err?.status >= 500 ||
-      err.message?.startsWith("Model returned an unusable response");
-    if (!transient || attempt > 4) throw err;
+/**
+ * Runs one call, preferring the first model and degrading to the next when one is
+ * unavailable. `usedModels` collects what actually answered, so the run can record
+ * it — scores from different models are not comparable.
+ */
+async function complete(args) {
+  let lastError;
 
-    // Back off further each time — an overload lasting a few seconds and one
-    // lasting a minute both cost the same lost run if we give up early.
-    await new Promise((resolve) => setTimeout(resolve, attempt * 15000));
-    return complete(args, attempt + 1);
+  for (const model of MODELS) {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const result = await streamOnce({ ...args, model });
+        args.usedModels?.add(model);
+        return result;
+      } catch (err) {
+        if (!transient(err)) throw err;
+        lastError = err;
+
+        // Back off before retrying the same model; an overload lasting seconds
+        // and one lasting a minute cost the same lost run if we give up early.
+        if (attempt < 3) await new Promise((r) => setTimeout(r, attempt * 15000));
+      }
+    }
+    console.warn(`${model} unavailable after 3 attempts; trying the next model`);
   }
+
+  throw lastError;
 }
 
-async function streamOnce({ system, prompt, schema }) {
+async function streamOnce({ system, prompt, schema, model, validate }) {
   const stream = client.messages.stream({
-    model: MODEL,
+    model,
     // The analyze call emits call outcomes, twelve scored dimensions, the issue
     // patterns with their citations, and the test suite — and thinking counts
     // against this ceiling too. 32k truncated it once the framework was added.
@@ -67,7 +79,16 @@ async function streamOnce({ system, prompt, schema }) {
   const text = message.content.find((block) => block.type === "text")?.text;
   if (!text) throw new Error(`Model returned no text (stop_reason: ${message.stop_reason})`);
 
-  return JSON.parse(text);
+  const result = JSON.parse(text);
+
+  // Structured outputs guarantee the response matches the schema, not that it says
+  // anything. Empty arrays are schema-valid, and the format supports no
+  // minimum-length constraints — so "did it actually answer" is checked here. A run
+  // returning no findings and no test cases would otherwise be presented as a result.
+  const problem = validate?.(result);
+  if (problem) throw new Error(`Model returned an unusable response: ${problem}`);
+
+  return result;
 }
 
 // Rendered into both prompts so the two passes judge the same configuration.
@@ -247,7 +268,7 @@ before reading what it said. Rules for that:
  * recurring failure patterns, and generate the test suite. They share the same inputs,
  * and the test cases should be derived from the failures actually observed.
  */
-export function analyze({ agent, transcripts }) {
+export function analyze({ agent, transcripts, usedModels }) {
   const prompt = `# Agent under review
 
 ${describeAgent(agent)}
@@ -307,6 +328,7 @@ ${describeTranscripts(transcripts)}
     system: ANALYST_SYSTEM,
     prompt,
     schema: ANALYZE_SCHEMA,
+    usedModels,
     // issuePatterns may legitimately be empty — an agent can have no recurring
     // problems. The other two cannot: every dimension is always scored, and the
     // suite is always six cases.
@@ -398,6 +420,7 @@ export function evaluate({
   patches,
   configChanges,
   recommend,
+  usedModels,
 }) {
   const schema = {
     type: "object",
@@ -525,6 +548,7 @@ the before/after diff, so the text must be ready to paste into the agent's confi
     system: EVALUATOR_SYSTEM,
     prompt,
     schema,
+    usedModels,
     // Every case must come back with a verdict on every criterion. A short reply
     // here would silently understate the score, or — if the suite came back empty
     // — invite the model to invent cases of its own.
