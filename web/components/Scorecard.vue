@@ -34,7 +34,7 @@ const STATUS_CLASS = {
   not_evaluated: "tag-neutral",
 };
 
-const scored = new Map(props.run.framework?.map((d) => [d.dimension, d]) ?? []);
+const scored = new Map(props.run.analysis.framework.map((d) => [d.dimension, d]));
 
 const issuesFor = (dimension) =>
   props.run.analysis.issuePatterns.filter((p) => p.dimension === dimension);
