@@ -72,7 +72,7 @@ app.post(
   "/api/run/:agentId",
   wrap(async (req, res) => {
     const auth = await authFor(req.query.locationId);
-    const cached = req.query.fresh ? null : readRun(auth.locationId, req.params.agentId);
+    const cached = req.query.fresh ? null : await readRun(auth.locationId, req.params.agentId);
     res.json(cached ?? (await run(auth, req.params.agentId)));
   }),
 );

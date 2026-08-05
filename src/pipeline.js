@@ -1,16 +1,17 @@
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
-
+import * as store from "./store.js";
 import { getAgent, listCallLogs } from "./ghl.js";
 import { analyze, evaluate } from "./ai.js";
 
-// Runs are stored per location and agent: one deployment serves many installs,
-// and a location may have several Voice AI agents whose results must not be
-// confused with each other.
-const runFile = (locationId, agentId) => `data/run-${locationId}-${agentId}.json`;
+// Runs are keyed per location and agent: one deployment serves many installs, and
+// a location may have several Voice AI agents whose results must not be confused
+// with each other.
+//
+// This is a cache, not a record — an analysis costs three model calls and several
+// minutes, so it is computed once and served until the user asks for a fresh one.
+const runKey = (locationId, agentId) => `run:${locationId}:${agentId}`;
 
 export function readRun(locationId, agentId) {
-  const file = runFile(locationId, agentId);
-  return existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : null;
+  return store.get(runKey(locationId, agentId));
 }
 
 function score(cases) {
@@ -93,8 +94,7 @@ export async function run(auth, agentId) {
     flipped: flippedCriteria(baseline.cases, patched.cases, testCases),
   };
 
-  mkdirSync("data", { recursive: true });
-  writeFileSync(runFile(auth.locationId, agentId), JSON.stringify(result, null, 2));
+  await store.set(runKey(auth.locationId, agentId), result);
 
   return result;
 }

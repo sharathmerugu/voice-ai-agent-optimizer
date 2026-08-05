@@ -15,7 +15,8 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.68.0",
-    "express": "^5.1.0"
+    "express": "^5.1.0",
+    "redis": "^6.2.0"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^6.0.0",

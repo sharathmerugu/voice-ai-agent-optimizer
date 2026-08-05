@@ -54,9 +54,9 @@ at all — a Private Integration Token from **Sub-account → Settings → Priva
 and it works regardless of any install restriction. See [Local development](#local-development) for
 detail.
 
-> **Hosting caveat.** The deployment runs on a free tier with an ephemeral filesystem, so a restart
-> clears stored installs and runs. Reinstalling restores it. A database or mounted volume is the
-> production answer; a JSON file is the honest one for a demo.
+> **Hosting caveat.** Installs and cached analyses are held in Redis, so they survive a restart.
+> The free tier still sleeps after inactivity, so the first request after a quiet period waits on a
+> cold start.
 
 ---
 
@@ -90,7 +90,7 @@ Express (server.js) ── auth.js ──► per-location OAuth token
         │
         └────── pipeline.js ──► ai.js ──► Claude (3 calls)
                      │
-                     └──► data/run-<locationId>.json
+                     └──► store.js ──► Redis, or per-key files locally
 ```
 
 | File | Responsibility |
@@ -98,8 +98,9 @@ Express (server.js) ── auth.js ──► per-location OAuth token
 | `src/auth.js` | Records installs, mints and caches location tokens, resolves credentials per request. |
 | `src/ghl.js` | HighLevel client. Three calls, one normalization step. Reads no environment — credentials are passed in. |
 | `src/ai.js` | `analyze()` and `evaluate()`, with their prompts inline. |
-| `src/pipeline.js` | Orchestrates the three calls, scores, computes the delta, persists the run. |
-| `src/server.js` | Three routes plus the static bundle. |
+| `src/pipeline.js` | Orchestrates the three calls, scores, computes the delta, caches the run. |
+| `src/store.js` | Key-value storage for installs and cached analyses. Redis in production, files locally. |
+| `src/server.js` | Four routes plus the static bundle. |
 
 ### Multi-tenancy
 
@@ -156,6 +157,35 @@ A full pass is three sequential calls over several minutes. A transient `overloa
 mid-stream is retried with increasing backoff, because losing the whole run to a few seconds of
 capacity pressure costs the user the entire result — and a reviewer seeing a failure would
 reasonably conclude the tool is broken.
+
+### Storage: key-value, not relational
+
+Nothing here is relational. There are two kinds of record — an install, and a cached analysis — and
+both are read whole by a single key. There are no joins, no aggregations and no partial updates, so a
+schema and a migration tool would be overhead in exchange for nothing.
+
+`src/store.js` is a small key-value interface with two backends: **Redis when `REDIS_URL` is set**,
+per-key files otherwise. Local development therefore needs no infrastructure, and a deployment gets
+durability.
+
+Two properties made this worth doing rather than leaving analyses in plain files:
+
+**One key per record, so concurrent writes cannot collide.** An earlier version kept every install in
+a single `installs.json`, read, modified and written with network calls in between. Two sub-accounts
+refreshing tokens at the same moment would interleave and the second write would silently discard the
+first. Keying each install separately removes the shared document, and with it the lost update.
+
+**The cache has to survive a restart to be a cache at all.** An analysis is three model calls and
+several minutes. It is computed once per agent and served until the user asks for a fresh one — but
+on a free tier the filesystem is wiped whenever the service sleeps, so every visit after a quiet
+period would pay for the analysis again, and every user would be told to reinstall an app they
+already have.
+
+Minted location tokens carry a TTL matching the token's own lifetime, so they expire rather than
+accumulating as dead keys.
+
+Postgres was considered and rejected: nothing here is relational, and Render's free tier expires
+after 30 days — the exact window in which a submission might be revisited.
 
 ### Why three LLM calls, not six
 
@@ -216,9 +246,9 @@ present.
 **Out of scope by design**
 - **No write-back.** The optimizer recommends; the user applies changes in HighLevel. Patches are
   copy-ready.
-- **Free-tier persistence.** Installs and runs are JSON files under `data/`. On a host with an
-  ephemeral filesystem, a restart clears them and the app must be reinstalled. A database or a
-  mounted volume is the production answer.
+- **Cold starts.** Installs and cached analyses live in Redis and survive restarts, but a free-tier
+  service still sleeps after inactivity, so the first request after a quiet period waits on the
+  container starting.
 
 ---
 

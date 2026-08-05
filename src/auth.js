@@ -15,23 +15,16 @@
 //
 // A Private Integration Token is honoured as a local-development shortcut so the
 // pipeline can be exercised from the CLI without an install.
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import * as store from "./store.js";
 
 const BASE = "https://services.leadconnectorhq.com";
-const STORE = "data/installs.json";
+
+// One key per install. Records are never read-modified-written as a group, so two
+// locations refreshing at the same moment cannot overwrite each other.
+const companyKey = (id) => `install:company:${id}`;
+const locationKey = (id) => `install:location:${id}`;
 
 const { GHL_CLIENT_ID, GHL_CLIENT_SECRET, GHL_PIT, GHL_LOCATION_ID } = process.env;
-
-function readStore() {
-  if (!existsSync(STORE)) return { companies: {}, locations: {} };
-  const store = JSON.parse(readFileSync(STORE, "utf8"));
-  return { companies: store.companies ?? {}, locations: store.locations ?? {} };
-}
-
-function writeStore(store) {
-  mkdirSync("data", { recursive: true });
-  writeFileSync(STORE, JSON.stringify(store, null, 2));
-}
 
 // Expiry is tracked a minute early rather than racing the boundary.
 const expiryOf = (token) => Date.now() + (token.expires_in - 60) * 1000;
@@ -69,19 +62,17 @@ async function requestToken(params) {
  */
 export async function completeInstall(code) {
   const token = await requestToken({ grant_type: "authorization_code", code, user_type: "Location" });
-  const store = readStore();
 
   const locationId = token.locationId ?? claimsOf(token.access_token).authClassId;
   const isLocationScoped = token.userType === "Location" || Boolean(token.locationId);
 
   if (isLocationScoped && locationId) {
-    store.locations[locationId] = {
+    await store.set(locationKey(locationId), {
       accessToken: token.access_token,
       refreshToken: token.refresh_token,
       expiresAt: expiryOf(token),
       installedAt: new Date().toISOString(),
-    };
-    writeStore(store);
+    });
     return { scope: "location", id: locationId };
   }
 
@@ -91,18 +82,17 @@ export async function completeInstall(code) {
     );
   }
 
-  store.companies[token.companyId] = {
+  await store.set(companyKey(token.companyId), {
     accessToken: token.access_token,
     refreshToken: token.refresh_token,
     expiresAt: expiryOf(token),
     installedAt: new Date().toISOString(),
-  };
-  writeStore(store);
+  });
   return { scope: "company", id: token.companyId };
 }
 
 /** A usable company access token, refreshing it if it has expired. */
-async function companyToken(companyId, install, store) {
+async function companyToken(companyId, install) {
   if (fresh(install)) return install.accessToken;
 
   const token = await requestToken({
@@ -111,13 +101,12 @@ async function companyToken(companyId, install, store) {
     user_type: "Company",
   });
 
-  store.companies[companyId] = {
+  await store.set(companyKey(companyId), {
     ...install,
     accessToken: token.access_token,
     refreshToken: token.refresh_token ?? install.refreshToken,
     expiresAt: expiryOf(token),
-  };
-  writeStore(store);
+  });
   return token.access_token;
 }
 
@@ -149,9 +138,7 @@ async function mintLocationToken(accessToken, companyId, locationId) {
 export async function authFor(locationId) {
   if (!locationId) throw new Error("No locationId — open this page from inside HighLevel.");
 
-  const store = readStore();
-
-  const cached = store.locations[locationId];
+  const cached = await store.get(locationKey(locationId));
   if (fresh(cached)) return { locationId, token: cached.accessToken };
 
   // A direct location install whose token has expired can be refreshed.
@@ -161,33 +148,40 @@ export async function authFor(locationId) {
       refresh_token: cached.refreshToken,
       user_type: "Location",
     });
-    store.locations[locationId] = {
+    await store.set(locationKey(locationId), {
       ...cached,
       accessToken: token.access_token,
       refreshToken: token.refresh_token ?? cached.refreshToken,
       expiresAt: expiryOf(token),
-    };
-    writeStore(store);
+    });
     return { locationId, token: token.access_token };
   }
 
   // Otherwise mint one from whichever agency install covers this sub-account.
   const failures = [];
-  for (const [companyId, install] of Object.entries(store.companies)) {
+  for (const key of await store.keys("install:company:")) {
+    const companyId = key.split(":").pop();
+    const install = await store.get(key);
+    if (!install) continue;
+
     try {
       const token = await mintLocationToken(
-        await companyToken(companyId, install, store),
+        await companyToken(companyId, install),
         companyId,
         locationId,
       );
-      const current = readStore();
-      current.locations[locationId] = {
-        accessToken: token.access_token,
-        expiresAt: expiryOf(token),
-        companyId,
-        installedAt: new Date().toISOString(),
-      };
-      writeStore(current);
+      await store.set(
+        locationKey(locationId),
+        {
+          accessToken: token.access_token,
+          expiresAt: expiryOf(token),
+          companyId,
+          installedAt: new Date().toISOString(),
+        },
+        // Minted tokens are cheap to replace, so they expire with the token
+        // itself rather than lingering as dead keys.
+        token.expires_in,
+      );
       return { locationId, token: token.access_token };
     } catch (err) {
       failures.push(`${companyId}: ${err.message}`);
