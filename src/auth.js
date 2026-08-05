@@ -50,20 +50,27 @@ async function requestToken(params) {
  * `authClassId`, so that is the authoritative source and the response field is
  * only a fallback.
  */
-function locationOf(token) {
+export function claimsOf(token) {
   try {
-    const claims = JSON.parse(
-      Buffer.from(token.access_token.split(".")[1], "base64url").toString("utf8"),
-    );
-    if (claims.authClassId) return claims.authClassId;
+    return JSON.parse(Buffer.from(token.access_token.split(".")[1], "base64url").toString("utf8"));
   } catch {
-    // Not a JWT, or an unexpected shape — fall through to the response field.
+    return {};
   }
+}
 
+function locationOf(token) {
+  const claims = claimsOf(token);
+
+  // A location-scoped install: the response names the location, and the token's
+  // authClass confirms it.
   if (token.locationId) return token.locationId;
+  if (claims.authClass === "Location" && claims.authClassId) return claims.authClassId;
 
+  // A company-scoped token cannot serve a sub-account's Voice AI data. Say so
+  // rather than storing it under an id that will never be looked up.
   throw new Error(
-    `Could not determine the location for this install. Token response fields: ${Object.keys(token).join(", ")}`,
+    `HighLevel issued a ${claims.authClass ?? "unknown"}-scoped token (${claims.authClassId ?? "no id"}), not a location-scoped one. ` +
+      `Reinstall from inside the sub-account rather than the agency. Token response fields: ${Object.keys(token).join(", ")}.`,
   );
 }
 
