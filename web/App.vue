@@ -15,7 +15,8 @@ const TABS = [
 // HighLevel substitutes {{location.id}} into the Custom Page URL at load.
 const locationId = new URLSearchParams(location.search).get("locationId");
 
-const agent = ref(null);
+const agents = ref([]);
+const agentId = ref(null);
 const run = ref(null);
 const activeTab = ref("dashboard");
 const busy = ref(false);
@@ -31,10 +32,11 @@ async function api(path, options) {
 async function load(fresh = false) {
   busy.value = true;
   error.value = "";
+  run.value = null;
+  activeTab.value = "dashboard";
   try {
-    agent.value ??= await api(`/api/agent?locationId=${locationId}`);
     run.value = await api(
-      `/api/run/${agent.value.id}?locationId=${locationId}${fresh ? "&fresh=1" : ""}`,
+      `/api/run/${agentId.value}?locationId=${locationId}${fresh ? "&fresh=1" : ""}`,
       { method: "POST" },
     );
   } catch (e) {
@@ -44,11 +46,22 @@ async function load(fresh = false) {
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
   if (!locationId) {
     error.value = "No locationId in the page URL. Open this page from inside HighLevel.";
     return;
   }
+
+  busy.value = true;
+  try {
+    agents.value = await api(`/api/agents?locationId=${locationId}`);
+    agentId.value = agents.value[0].id;
+  } catch (e) {
+    error.value = e.message;
+    busy.value = false;
+    return;
+  }
+
   load();
 });
 </script>
@@ -58,9 +71,18 @@ onMounted(() => {
     <header>
       <div>
         <h1>Voice AI Agent Optimizer</h1>
-        <p class="muted" v-if="agent">{{ agent.name }}</p>
+        <select
+          v-if="agents.length > 1"
+          class="agent-picker"
+          v-model="agentId"
+          :disabled="busy"
+          @change="load()"
+        >
+          <option v-for="a in agents" :key="a.id" :value="a.id">{{ a.name }}</option>
+        </select>
+        <p class="muted" v-else-if="agents.length">{{ agents[0].name }}</p>
       </div>
-      <button class="btn" :disabled="busy || !agent" @click="load(true)">
+      <button class="btn" :disabled="busy || !agentId" @click="load(true)">
         {{ busy ? "Analyzing…" : "Re-run analysis" }}
       </button>
     </header>
@@ -106,6 +128,17 @@ header {
 
 header p {
   margin: 4px 0 0;
+}
+
+.agent-picker {
+  margin-top: 6px;
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
 }
 
 .banner {

@@ -1,7 +1,7 @@
 import express from "express";
 
 import { authFor, completeInstall } from "./auth.js";
-import { listAgents, getAgent } from "./ghl.js";
+import { listAgents } from "./ghl.js";
 import { run, readRun } from "./pipeline.js";
 
 const app = express();
@@ -52,14 +52,17 @@ app.get(
   }),
 );
 
-// The optimizer works on one agent at a time; the first is the demo agent.
+// Every Voice AI agent in the location. The optimizer analyzes one at a time, so
+// the caller picks which.
 app.get(
-  "/api/agent",
+  "/api/agents",
   wrap(async (req, res) => {
     const auth = await authFor(req.query.locationId);
-    const [first] = await listAgents(auth);
-    if (!first) return res.status(404).json({ error: "No Voice AI agents in this location." });
-    res.json(await getAgent(auth, first.id));
+    const agents = await listAgents(auth);
+    if (!agents.length) {
+      return res.status(404).json({ error: "No Voice AI agents in this location." });
+    }
+    res.json(agents);
   }),
 );
 
@@ -69,7 +72,7 @@ app.post(
   "/api/run/:agentId",
   wrap(async (req, res) => {
     const auth = await authFor(req.query.locationId);
-    const cached = req.query.fresh ? null : readRun(auth.locationId);
+    const cached = req.query.fresh ? null : readRun(auth.locationId, req.params.agentId);
     res.json(cached ?? (await run(auth, req.params.agentId)));
   }),
 );

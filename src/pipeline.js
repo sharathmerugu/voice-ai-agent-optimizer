@@ -3,11 +3,13 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { getAgent, listCallLogs } from "./ghl.js";
 import { analyze, evaluate } from "./ai.js";
 
-// Runs are stored per location so one deployment can serve many installs.
-const runFile = (locationId) => `data/run-${locationId}.json`;
+// Runs are stored per location and agent: one deployment serves many installs,
+// and a location may have several Voice AI agents whose results must not be
+// confused with each other.
+const runFile = (locationId, agentId) => `data/run-${locationId}-${agentId}.json`;
 
-export function readRun(locationId) {
-  const file = runFile(locationId);
+export function readRun(locationId, agentId) {
+  const file = runFile(locationId, agentId);
   return existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : null;
 }
 
@@ -89,7 +91,7 @@ export async function run(auth, agentId) {
   };
 
   mkdirSync("data", { recursive: true });
-  writeFileSync(runFile(auth.locationId), JSON.stringify(result, null, 2));
+  writeFileSync(runFile(auth.locationId, agentId), JSON.stringify(result, null, 2));
 
   return result;
 }
