@@ -1,0 +1,19 @@
+# Render blueprint. Importing this repo as a Blueprint provisions the service
+# with these settings; the four secrets below are entered in the dashboard.
+services:
+  - type: web
+    name: voice-ai-agent-optimizer
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      # Developer Portal > your app > Advanced Settings > Auth
+      - key: GHL_CLIENT_ID
+        sync: false
+      - key: GHL_CLIENT_SECRET
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
