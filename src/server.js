@@ -23,6 +23,19 @@ const wrap = (handler) => (req, res) =>
 app.get(
   "/oauth/callback",
   wrap(async (req, res) => {
+    // Reached directly rather than via an install; say so instead of surfacing
+    // a token-exchange failure.
+    if (!req.query.code) {
+      return res
+        .status(400)
+        .send(
+          `<body style="font:16px -apple-system,sans-serif;padding:48px;max-width:34rem">
+             <h2>Nothing to install</h2>
+             <p>This page is the destination HighLevel redirects to after an install. Start from the app's install link instead.</p>
+           </body>`,
+        );
+    }
+
     const locationId = await completeInstall(req.query.code);
     res.send(
       `<body style="font:16px -apple-system,sans-serif;padding:48px;max-width:34rem">

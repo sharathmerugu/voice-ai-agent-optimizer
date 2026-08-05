@@ -218,8 +218,8 @@ In the [Developer Portal](https://marketplace.gohighlevel.com): **My Apps → Cr
 | App type | **Private** | Profile → Listing Configuration |
 | Target user | Sub-Account | Profile → Listing Configuration |
 | Who can install | Everyone | Profile → Listing Configuration |
-| Custom Page URL | `https://<your-host>/?locationId={{location.id}}`, placed in the left navigation | Modules → Custom Page |
-| Redirect URL | `https://<your-host>/oauth/callback` | Advanced Settings → Auth |
+| Custom Page URL | `https://voice-ai-agent-optimizer-ofae.onrender.com/?locationId={{location.id}}`, placed in the left navigation | Modules → Custom Page |
+| Redirect URL | `https://voice-ai-agent-optimizer-ofae.onrender.com/oauth/callback` | Advanced Settings → Auth |
 | Scope | `locations.readonly` | Advanced Settings → Auth |
 
 `{{location.id}}` is a literal HighLevel template variable — type it exactly. Copy the **Client ID**
@@ -246,7 +246,7 @@ Take the install link from **Advanced Settings → Auth**, append `client_id`, a
 ```
 https://marketplace.gohighlevel.com/v2/oauth/chooselocation
   ?response_type=code
-  &redirect_uri=https%3A%2F%2F<your-host>%2Foauth%2Fcallback
+  &redirect_uri=https%3A%2F%2Fvoice-ai-agent-optimizer-ofae.onrender.com%2Foauth%2Fcallback
   &scope=locations.readonly
   &client_id=<your app id>
   &version_id=<your version id>
