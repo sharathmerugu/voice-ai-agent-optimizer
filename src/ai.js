@@ -21,9 +21,11 @@ async function complete(args, attempt = 1) {
     return await streamOnce(args);
   } catch (err) {
     const transient = err?.error?.error?.type === "overloaded_error" || err?.status >= 500;
-    if (!transient || attempt > 2) throw err;
+    if (!transient || attempt > 4) throw err;
 
-    await new Promise((resolve) => setTimeout(resolve, attempt * 5000));
+    // Back off further each time — an overload lasting a few seconds and one
+    // lasting a minute both cost the same lost run if we give up early.
+    await new Promise((resolve) => setTimeout(resolve, attempt * 15000));
     return complete(args, attempt + 1);
   }
 }
@@ -69,7 +71,7 @@ ${agent.prompt || "(empty)"}`;
 function describeTranscripts(transcripts) {
   return transcripts
     .map(
-      (t) => `## Call ${t.callId} (${t.durationSec}s)
+      (t) => `## Call ${t.callId} (${t.durationSec}s)${t.isTestCall ? " — test call, not a customer" : ""}
 Actions the agent actually triggered: ${t.actionsExecuted.length ? t.actionsExecuted.join(", ") : "none"}
 Data the agent actually captured: ${Object.keys(t.dataCollected).length ? JSON.stringify(t.dataCollected) : "none"}
 Transferred to a human: ${t.transferred ? "yes" : "no"}
@@ -153,7 +155,11 @@ Rules you do not break:
   words exactly as they appear. If you cannot quote it, you may not report it.
 - Judge the agent against its own stated goal and configuration, not against an ideal agent.
 - An issue is a pattern only if it recurs. Report the frequency honestly, including 1.
-- Do not invent problems to fill out the list. A well-handled call is a success.`;
+- Do not invent problems to fill out the list. A well-handled call is a success.
+- Calls marked as test calls are the operator probing their own agent, not customers.
+  Behaviour that only appears under probing says less about customer experience than the
+  same behaviour in a real call. Weigh them accordingly, and say so when a pattern rests
+  only on test calls.`;
 
 /**
  * One call covering three assignment requirements: analyze the transcripts, detect

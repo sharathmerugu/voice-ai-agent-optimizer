@@ -9,6 +9,8 @@ const OUTCOME_LABELS = {
 
 const SEVERITY_CLASS = { high: "tag-fail", medium: "tag-warn", low: "tag-neutral" };
 
+const testCallCount = props.run.transcripts.filter((t) => t.isTestCall).length;
+
 const counts = Object.keys(OUTCOME_LABELS).map((outcome) => ({
   outcome,
   label: OUTCOME_LABELS[outcome],
@@ -34,8 +36,9 @@ const counts = Object.keys(OUTCOME_LABELS).map((outcome) => ({
 
   <h2 class="section-title">Recurring issues</h2>
   <p class="muted intro">
-    Detected across {{ run.transcripts.length }} real Voice AI call transcripts. Each issue quotes the
-    calls it was found in.
+    Detected across {{ run.transcripts.length }} Voice AI call transcripts<span v-if="testCallCount">
+      ({{ testCallCount }} of them test calls)</span
+    >. Each issue quotes the calls it was found in.
   </p>
 
   <div class="card issue" v-for="issue in run.analysis.issuePatterns" :key="issue.title">

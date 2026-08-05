@@ -129,6 +129,34 @@ single location named in `.env`. A deployed instance has no PIT in its environme
 there must go through OAuth. It is also tried last, after every agency install has been given a
 chance to mint a token, so it can never mask a real credential.
 
+### Custom Page rather than Custom JS
+
+The brief allows either custom JS or a marketplace app. Both are modules *of* a marketplace app —
+in the Developer Portal, **Custom Page** and **Custom JS** sit side by side under Modules — so the
+choice is which surface the app exposes, not whether to build one.
+
+Custom Page renders a full UI in an iframe. Custom JS injects script into HighLevel's own screens,
+requires Agency distribution, goes through HighLevel review with a stated SLA of up to ten days, and
+forbids loading remote scripts — which rules out serving a Vue bundle at all. For a four-screen
+dashboard it is the wrong surface, and for a short deadline it is not a viable one.
+
+### Which calls are analyzed
+
+Every call the agent has handled, not only test calls: the ingestion filter is `agentId` plus "has a
+transcript". The 25 most recent are taken, and calls without a transcript are skipped.
+
+Test calls are labelled as such when they reach the model, because a call where the operator is
+probing their own agent says less about customer experience than the same behaviour in a real one —
+and in an account with a hundred customer calls and a handful of tests, treating them alike would
+skew the recurring-issue frequencies.
+
+### Handling a busy model API
+
+A full pass is three sequential calls over several minutes. A transient `overloaded_error` arriving
+mid-stream is retried with increasing backoff, because losing the whole run to a few seconds of
+capacity pressure costs the user the entire result — and a reviewer seeing a failure would
+reasonably conclude the tool is broken.
+
 ### Why three LLM calls, not six
 
 **Analyze and generate are one call.** They take identical inputs, and test cases should be derived
