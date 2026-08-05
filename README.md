@@ -22,9 +22,10 @@ found, the test suite it generated, its recommendations, and the measured before
 
 &nbsp;&nbsp;&nbsp;&nbsp;🔗 **[Install into your HighLevel sub-account](https://marketplace.gohighlevel.com/v2/oauth/chooselocation?response_type=code&redirect_uri=https%3A%2F%2Fvoice-ai-agent-optimizer-ofae.onrender.com%2Foauth%2Fcallback&client_id=6a6f52ae902547b1dd369bca-msfmkjje&scope=locations.readonly+voice-ai-dashboard.readonly+voice-ai-agents.readonly+voice-ai-agent-goals.readonly&version_id=6a6f52ae902547b1dd369bca)**
 
-Choose your sub-account and approve. You will see **your** agent and **your** transcripts — each
-install stores its own location-scoped token, and a request for a location with no install is refused
-rather than served with fallback credentials.
+Approve the app and it installs across your agency's sub-accounts. Open any of them and you will see
+**that account's** agent and **that account's** transcripts — credentials are resolved from the
+location the page was opened in, and a request for a location no install covers is refused rather
+than served with someone else's.
 
 Two prerequisites, both easy to miss:
 
@@ -94,7 +95,7 @@ Express (server.js) ── auth.js ──► per-location OAuth token
 
 | File | Responsibility |
 |---|---|
-| `src/auth.js` | Exchanges install codes for location-scoped tokens, refreshes them, resolves credentials per request. |
+| `src/auth.js` | Records installs, mints and caches location tokens, resolves credentials per request. |
 | `src/ghl.js` | HighLevel client. Three calls, one normalization step. Reads no environment — credentials are passed in. |
 | `src/ai.js` | `analyze()` and `evaluate()`, with their prompts inline. |
 | `src/pipeline.js` | Orchestrates the three calls, scores, computes the delta, persists the run. |
@@ -102,15 +103,31 @@ Express (server.js) ── auth.js ──► per-location OAuth token
 
 ### Multi-tenancy
 
-Each installing sub-account gets its own token, stored keyed by `locationId`. The frontend reads
-`locationId` from its URL (HighLevel substitutes `{{location.id}}` at load) and sends it with every
-request; the backend resolves credentials from it. Two accounts using the same deployment never see
-each other's data — a request for a location with no stored install is refused rather than served
-with fallback credentials.
+The frontend reads `locationId` from its own URL — HighLevel substitutes `{{location.id}}` into the
+Custom Page address at load — and sends it with every request. The backend resolves credentials from
+that id, so one deployment serves any number of installs and no request is ever answered with
+credentials belonging to a different account.
+
+**HighLevel installs a sub-account app in one of two shapes, and both arrive through the same
+callback.** This was the single most surprising thing in the integration:
+
+| Install | What the token response carries | How it is used |
+|---|---|---|
+| **Agency** — the agency owner accepts the app | `companyId`, `isBulkInstallation`, `installToFutureLocations`; **no `locationId`** | Covers every sub-account, including ones created later. A company token cannot read a sub-account's Voice AI data, so it is exchanged for a location token via `POST /oauth/locationToken` for whichever location opened the page. |
+| **Location** — a single sub-account installs | `locationId`, plus a refresh token | Used directly. |
+
+Accepting an app offered to sub-accounts produces the *agency* shape, so that is what a reviewer will
+almost certainly get. Assuming the location shape is what made the first two install attempts store a
+token under the agency id and then report the app as uninstalled.
+
+Location tokens are short-lived and re-mintable, so they are cached per location but never refreshed
+— the company token is the durable credential and is refreshed when it expires. Direct location
+installs keep their own refresh token and are refreshed in place.
 
 A Private Integration Token is honoured as a **local-development shortcut only**, and only for the
 single location named in `.env`. A deployed instance has no PIT in its environment, so every request
-there must go through OAuth.
+there must go through OAuth. It is also tried last, after every agency install has been given a
+chance to mint a token, so it can never mask a real credential.
 
 ### Why three LLM calls, not six
 
