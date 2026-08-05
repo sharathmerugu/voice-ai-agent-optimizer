@@ -57,7 +57,11 @@ export async function set(key, value, ttlSeconds) {
 export async function keys(prefix) {
   if (REDIS_URL) {
     const found = [];
-    for await (const key of (await client()).scanIterator({ MATCH: `${prefix}*` })) found.push(key);
+    // scanIterator yields a batch of keys per iteration in node-redis v5+, and a
+    // single key in v4. Flattening covers both.
+    for await (const batch of (await client()).scanIterator({ MATCH: `${prefix}*` })) {
+      found.push(...[batch].flat());
+    }
     return found;
   }
 
