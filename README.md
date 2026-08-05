@@ -170,8 +170,13 @@ judging and prescribing in one context produces recommendations that connect to 
 before/after is measured rather than asserted. Patches are never applied by string surgery — the
 patched pass receives the original prompt plus the patches and evaluates as if applied.
 
-Responses use the Anthropic API's structured outputs, so a response that does not match the schema
-is not a reachable state and there is no parse-and-retry path.
+Responses use the Anthropic API's structured outputs, so a malformed response is not a reachable
+state. That guarantees *shape*, not *substance* — and the format supports no minimum-length
+constraints, so an empty array is schema-valid. A run once came back with zero dimensions, zero
+issues and zero test cases, passed validation, and the evaluate call then invented five test cases
+of its own to score. Each call therefore validates what it received: every dimension scored, six
+test cases, one outcome per transcript, a verdict for every criterion. A response that answers
+nothing is retried, not rendered.
 
 ---
 
@@ -365,6 +370,11 @@ because a single-tenant version would have shown my data to anyone who installed
 **QA.** The agent's own configuration is the ground truth: `actions`, `callEndWorkflowIds`, and
 `agentWorkingHours` are all empty, and every transcript shows zero actions triggered and no data
 captured. An analyzer that fails to surface a booking agent which cannot book has failed, regardless
-of how well the rest reads. Separately, every `observed` quote is checked against the raw transcripts
-by exact string match — a fabricated citation is the one defect that would invalidate the whole
-report, so it is verified rather than trusted.
+of how well the rest reads — so `tool_execution` scoring 5/100 on fluent, confident calls is the
+check that matters, not the prose.
+
+`npm run verify` enforces what a reviewer cannot check by reading: every citation traced back to the
+call record, and every framework score reconciled against the issues beneath it — no dimension marked
+strong while carrying a high-severity issue, none reporting affected calls with nothing filed under
+it. Both failures are silent by nature. A fabricated quote reads exactly like a real one, and a
+flattering score reads exactly like an earned one.

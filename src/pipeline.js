@@ -50,7 +50,10 @@ export async function run(auth, agentId) {
     );
   }
 
-  const { callOutcomes, issuePatterns, testCases } = await analyze({ agent, transcripts });
+  const { callOutcomes, framework, issuePatterns, testCases } = await analyze({
+    agent,
+    transcripts,
+  });
 
   const baseline = await evaluate({
     agent,
@@ -80,7 +83,7 @@ export async function run(auth, agentId) {
     generatedAt: new Date().toISOString(),
     agent,
     transcripts,
-    analysis: { callOutcomes, issuePatterns },
+    analysis: { callOutcomes, framework, issuePatterns },
     testCases,
     baseline: { cases: baseline.cases, score: score(baseline.cases) },
     recommendations: baseline.recommendations,

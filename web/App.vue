@@ -1,11 +1,13 @@
 <script setup>
 import { ref, onMounted } from "vue";
+import Scorecard from "./components/Scorecard.vue";
 import Dashboard from "./components/Dashboard.vue";
 import TestCases from "./components/TestCases.vue";
 import Recommendations from "./components/Recommendations.vue";
 import BeforeAfter from "./components/BeforeAfter.vue";
 
 const TABS = [
+  ["scorecard", "Scorecard", Scorecard],
   ["dashboard", "Dashboard", Dashboard],
   ["tests", "Test Cases", TestCases],
   ["recs", "Recommendations", Recommendations],
@@ -18,7 +20,7 @@ const locationId = new URLSearchParams(location.search).get("locationId");
 const agents = ref([]);
 const agentId = ref(null);
 const run = ref(null);
-const activeTab = ref("dashboard");
+const activeTab = ref("scorecard");
 const busy = ref(false);
 const error = ref("");
 
@@ -33,7 +35,7 @@ async function load(fresh = false) {
   busy.value = true;
   error.value = "";
   run.value = null;
-  activeTab.value = "dashboard";
+  activeTab.value = "scorecard";
   try {
     run.value = await api(
       `/api/run/${agentId.value}?locationId=${locationId}${fresh ? "&fresh=1" : ""}`,
