@@ -1,5 +1,5 @@
-# Render blueprint. Importing this repo as a Blueprint provisions the service
-# with these settings; the four secrets below are entered in the dashboard.
+# Render blueprint. Importing this repo as a Blueprint provisions both services;
+# the three secrets marked `sync: false` are entered in the dashboard.
 services:
   - type: web
     name: voice-ai-agent-optimizer
@@ -10,22 +10,13 @@ services:
     envVars:
       - key: NODE_VERSION
         value: "22"
-      # Without this the service falls back to files, which do not survive a
+      # Without this the store falls back to files, which do not survive a
       # free-tier restart — losing every install and every cached analysis.
       - key: REDIS_URL
         fromService:
           type: keyvalue
           name: voice-ai-optimizer-store
           property: connectionString
-
-# Installs and cached analyses. An analysis costs three model calls and several
-# minutes, so losing the cache on restart means paying for it again on the next
-# visit — and losing the installs means a user is told to reinstall an app they
-# already have.
-keyValue:
-  - name: voice-ai-optimizer-store
-    plan: free
-    ipAllowList: []
       # Developer Portal > your app > Advanced Settings > Auth
       - key: GHL_CLIENT_ID
         sync: false
@@ -33,3 +24,14 @@ keyValue:
         sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
+
+  # Installs and cached analyses. An analysis costs three model calls and several
+  # minutes, so losing the cache on restart means paying for it again on the next
+  # visit — and losing the installs means a user is told to reinstall an app they
+  # already have.
+  - type: keyvalue
+    name: voice-ai-optimizer-store
+    plan: free
+    # Empty list means no public access: only the web service reaches it, over
+    # Render's internal network.
+    ipAllowList: []
