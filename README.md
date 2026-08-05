@@ -20,7 +20,7 @@ found, the test suite it generated, its recommendations, and the measured before
 
 **2. Install it into your own HighLevel sub-account**
 
-&nbsp;&nbsp;&nbsp;&nbsp;🔗 *(install link)*
+&nbsp;&nbsp;&nbsp;&nbsp;🔗 **[Install into your HighLevel sub-account](https://marketplace.gohighlevel.com/v2/oauth/chooselocation?response_type=code&redirect_uri=https%3A%2F%2Fvoice-ai-agent-optimizer-ofae.onrender.com%2Foauth%2Fcallback&client_id=6a6f52ae902547b1dd369bca-msfmkjje&scope=locations.readonly+voice-ai-dashboard.readonly+voice-ai-agents.readonly+voice-ai-agent-goals.readonly&version_id=6a6f52ae902547b1dd369bca)**
 
 Choose your sub-account and approve. You will see **your** agent and **your** transcripts — each
 install stores its own location-scoped token, and a request for a location with no install is refused
@@ -189,6 +189,23 @@ warrants, and says in the rationale that the change is applied in the UI.
 
 Two further categories — `call_settings` and `follow_up` — were added because they map to fields the
 API *does* expose and the transcripts produce direct evidence for them.
+
+**The Voice AI scope names are not published anywhere.** The Developer Portal's scope picker is the
+only source. For reference, this app requests:
+
+```
+locations.readonly
+voice-ai-dashboard.readonly
+voice-ai-agents.readonly
+voice-ai-agent-goals.readonly
+```
+
+Scopes are fixed at token-grant time, so adding one means every existing install must be redone —
+the old token keeps its old permissions and simply 403s.
+
+**The `client_id` is not the app id.** It is the app id plus a suffix
+(`6a6f52ae902547b1dd369bca-msfmkjje`). The bare app id is accepted by the install page but rejected
+by the token exchange, which fails *after* a successful-looking install.
 
 **The generated install link omits `client_id`.** The Developer Portal's install link carries only
 `version_id`; the install page then requests `installationDetails?appId=` with an empty value and
