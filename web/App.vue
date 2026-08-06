@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted } from "vue";
+import { ref, computed, onMounted, onUnmounted } from "vue";
 import Scorecard from "./components/Scorecard.vue";
 import Dashboard from "./components/Dashboard.vue";
 import TestCases from "./components/TestCases.vue";
@@ -17,33 +17,103 @@ const TABS = [
 // HighLevel substitutes {{location.id}} into the Custom Page URL at load.
 const locationId = new URLSearchParams(location.search).get("locationId");
 
+const POLL_MS = 3000;
+
 const agents = ref([]);
 const agentId = ref(null);
 const run = ref(null);
+const job = ref(null);
 const activeTab = ref("scorecard");
 const busy = ref(false);
 const error = ref("");
 
+let timer = null;
+
 async function api(path, options) {
   const res = await fetch(path, options);
   const body = await res.json();
-  if (!res.ok) throw new Error(body.error || `Request failed (${res.status})`);
-  return body;
+  // 202 is the job still running, not a failure.
+  if (!res.ok && res.status !== 202) {
+    throw new Error(body.error || `Request failed (${res.status})`);
+  }
+  return { status: res.status, body };
+}
+
+// "labelled 340 of 1,240 calls" is a real fraction that moves, because labelling
+// happens one call at a time. It is worth more than shaving a minute off the run.
+const progress = computed(() => {
+  const p = job.value?.progress;
+  if (!p?.total) return null;
+  return {
+    done: p.labelled + p.fromCache + (p.failed ?? 0),
+    total: p.total,
+    cached: p.fromCache,
+  };
+});
+
+// Advanced on every poll, so "started 2 min ago" does not sit at "just now" for
+// the length of the analysis.
+const now = ref(Date.now());
+
+const elapsed = computed(() => {
+  if (!job.value?.startedAt) return "";
+  const minutes = Math.floor((now.value - new Date(job.value.startedAt)) / 60000);
+  return minutes < 1 ? "just now" : `${minutes} min ago`;
+});
+
+function stopPolling() {
+  clearInterval(timer);
+  timer = null;
+}
+
+/** Accepts either shape the API returns: a finished run, or a job to poll. */
+function receive({ status, body }) {
+  if (status === 202) {
+    job.value = body.job;
+    return false;
+  }
+  run.value = body;
+  job.value = null;
+  // A re-run that failed while an older analysis was on file. Both are shown:
+  // the results are still true of the calls they covered.
+  error.value = body.jobError || "";
+  return true;
+}
+
+async function poll() {
+  try {
+    now.value = Date.now();
+    const done = receive(await api(`/api/run/${agentId.value}?locationId=${locationId}`));
+    if (done) {
+      stopPolling();
+      busy.value = false;
+    }
+  } catch (e) {
+    stopPolling();
+    busy.value = false;
+    error.value = e.message;
+  }
 }
 
 async function load(fresh = false) {
+  stopPolling();
   busy.value = true;
   error.value = "";
   run.value = null;
+  job.value = null;
   activeTab.value = "scorecard";
+
   try {
-    run.value = await api(
-      `/api/run/${agentId.value}?locationId=${locationId}${fresh ? "&fresh=1" : ""}`,
-      { method: "POST" },
+    const done = receive(
+      await api(`/api/run/${agentId.value}?locationId=${locationId}${fresh ? "&fresh=1" : ""}`, {
+        method: "POST",
+      }),
     );
+    if (done) return void (busy.value = false);
+
+    timer = setInterval(poll, POLL_MS);
   } catch (e) {
     error.value = e.message;
-  } finally {
     busy.value = false;
   }
 }
@@ -56,7 +126,7 @@ onMounted(async () => {
 
   busy.value = true;
   try {
-    agents.value = await api(`/api/agents?locationId=${locationId}`);
+    agents.value = (await api(`/api/agents?locationId=${locationId}`)).body;
     agentId.value = agents.value[0].id;
   } catch (e) {
     error.value = e.message;
@@ -66,6 +136,8 @@ onMounted(async () => {
 
   load();
 });
+
+onUnmounted(stopPolling);
 </script>
 
 <template>
@@ -94,14 +166,31 @@ onMounted(async () => {
     <div v-if="run?.newCallsSince && !busy" class="banner stale">
       {{ run.newCallsSince }} new
       {{ run.newCallsSince === 1 ? "call has" : "calls have" }} come in since this analysis. The
-      results below cover the {{ run.transcripts.length }} calls analyzed on
+      results below cover the {{ run.coverage.callsScored }} calls scored on
       {{ new Date(run.generatedAt).toLocaleDateString() }}.
       <button class="link" @click="load(true)">Re-run to include them</button>
     </div>
 
     <div v-if="busy && !run" class="card centered">
       <div class="spinner" />
-      <p class="muted">Ingesting transcripts and evaluating the agent…</p>
+      <!-- Order matters: once labelling finishes, the progress fraction is still
+           truthy at N of N, so the synthesizing case has to be tested first or
+           the page reads "labelling" for the several minutes of write-up. -->
+      <p v-if="job?.status === 'synthesizing'" class="progress">
+        All {{ progress?.total ?? "" }} calls labelled. Writing up the findings…
+      </p>
+      <p v-else-if="progress" class="progress">
+        Labelling call {{ progress.done }} of {{ progress.total }}
+        <span class="muted" v-if="progress.cached">
+          · {{ progress.cached }} already read on an earlier run
+        </span>
+      </p>
+      <p v-else class="progress">Fetching this agent's calls…</p>
+
+      <p class="muted centered-note">
+        Started {{ elapsed }}. You can close this page — the analysis keeps running and the
+        results will be here when you come back.
+      </p>
     </div>
 
     <template v-if="run">
@@ -119,14 +208,22 @@ onMounted(async () => {
       <component :is="TABS.find(([id]) => id === activeTab)[2]" :run="run" />
 
       <p class="provenance muted">
-        Analyzed
-        <template v-if="run.totalCalls > run.transcripts.length">
-          the {{ run.transcripts.length }} most recent of {{ run.totalCalls }} calls
+        Scored across
+        <template v-if="run.coverage.capped">
+          the {{ run.coverage.callsScored }} most recent of {{ run.coverage.totalCalls }} calls
         </template>
-        <template v-else>{{ run.transcripts.length }} call transcripts</template>
-        with
-        <code>{{ run.model || "an unrecorded model" }}</code>
-        on {{ new Date(run.generatedAt).toLocaleString() }}. Scores are not comparable across
+        <template v-else>
+          all {{ run.coverage.callsScored }}
+          {{ run.coverage.callsScored === 1 ? "call" : "calls" }} this agent has taken
+        </template>
+        — {{ run.coverage.fromCache }} read on an earlier run,
+        {{ run.coverage.labelled }} read for the first time.
+        <template v-if="run.coverage.failedToLabel">
+          {{ run.coverage.failedToLabel }} could not be read and are excluded.
+        </template>
+        The deep dive below was written from {{ run.sample.length }} of them, chosen as the most
+        revealing, by <code>{{ run.model || "an unrecorded model" }}</code> on
+        {{ new Date(run.generatedAt).toLocaleString() }}. Scores are not comparable across
         different models.
       </p>
     </template>
@@ -194,6 +291,19 @@ header p {
   align-items: center;
   gap: 12px;
   padding: 48px;
+  text-align: center;
+}
+
+.progress {
+  margin: 0;
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+
+.centered-note {
+  margin: 0;
+  max-width: 30rem;
+  font-size: 13px;
 }
 
 .spinner {

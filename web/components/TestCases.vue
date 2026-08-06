@@ -10,7 +10,7 @@ const cases = props.run.testCases.map((tc) => ({
 
 <template>
   <p class="muted intro">
-    Generated from the agent's own configuration and the failure patterns found in its transcripts.
+    Generated from the agent's own configuration and the failure patterns behind its weakest scores.
     Verdicts marked <span class="tag tag-neutral">observed</span> were measured against a real call;
     <span class="tag tag-neutral">predicted</span> verdicts are inferred from a gap in the agent's
     configuration for a scenario the recorded calls never exercised.
@@ -29,7 +29,9 @@ const cases = props.run.testCases.map((tc) => ({
         <span class="criterion">{{ v.criterion }}</span>
         <span class="tag tag-neutral">{{ v.tag }}</span>
       </div>
-      <p class="muted reason">{{ v.reason }}</p>
+      <!-- A passing criterion returns no reason. Nothing needs justifying, and
+           asking for one back is generation time the user waits through. -->
+      <p class="muted reason" v-if="v.reason">{{ v.reason }}</p>
       <blockquote v-if="v.evidence">{{ v.evidence }}</blockquote>
     </div>
   </div>

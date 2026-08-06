@@ -34,15 +34,15 @@ const STATUS_CLASS = {
   not_evaluated: "tag-neutral",
 };
 
-const scored = new Map(props.run.analysis.framework.map((d) => [d.dimension, d]));
+const scored = new Map(props.run.aggregate.framework.map((d) => [d.dimension, d]));
 
-const issuesFor = (dimension) =>
-  props.run.analysis.issuePatterns.filter((p) => p.dimension === dimension);
+const issuesFor = (dimension) => props.run.issues.filter((p) => p.dimension === dimension);
 
 // Total duration over turns. Shown under Responsiveness as context only — it mixes the
 // agent's response time with how long the caller spoke, so it is not a latency figure.
+// Computed from the sampled calls, since they are the only transcripts kept.
 const pacing = (() => {
-  const calls = props.run.transcripts;
+  const calls = props.run.sample.map((s) => s.call);
   if (!calls.length) return null;
   const turns = calls.reduce((n, c) => n + c.transcript.split(/\n(?=bot:|human:)/).length, 0);
   const seconds = calls.reduce((n, c) => n + c.durationSec, 0);
@@ -60,7 +60,17 @@ const groups = GROUPS.map((g) => ({
 <template>
   <p class="muted intro">
     Every agent is scored on the same twelve dimensions, so weaknesses can be compared between agents
-    and across runs. Each card lists the issues filed under it — the Dashboard tab holds the
+    and across runs. Every figure here is a count, not an estimate:
+    <template v-if="run.coverage.capped">
+      the <strong>{{ run.coverage.callsScored }}</strong> most recent of
+      {{ run.coverage.totalCalls }} calls were each read and scored individually.
+    </template>
+    <template v-else>
+      all <strong>{{ run.coverage.callsScored }}</strong> of this agent's calls were read and scored
+      individually.
+    </template>
+    A dimension is scored over the calls that exercised it — the rest are excluded rather than
+    counted as passes. Each card lists the issues filed under it; the Dashboard tab holds the
     transcript evidence behind them.
   </p>
 
@@ -83,7 +93,7 @@ const groups = GROUPS.map((g) => ({
           <strong>{{ card.score }}</strong>
           <span class="muted small">/ 100</span>
           <span class="muted small dot" v-if="card.callsAffected">
-            {{ card.callsAffected }} of {{ run.transcripts.length }} calls affected
+            {{ card.callsAffected }} of {{ card.exercised }} calls affected
           </span>
         </div>
 

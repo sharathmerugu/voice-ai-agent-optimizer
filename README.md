@@ -33,8 +33,10 @@ Two prerequisites, both easy to miss:
   history; it cannot manufacture it. With no transcripts it reports exactly that and stops. Open the
   agent → **Test Your Agent → Web Call** and run a few as different callers — no phone number and no
   telephony spend required, and they appear in the API immediately.
-- **The first analysis takes about five minutes** (three sequential model calls). It is then cached
-  per location and loads instantly; only *Re-run analysis* pays that cost again.
+- **The first analysis takes a few minutes** — every call is read once, then three sequential model
+  calls write it up. You can close the page while it runs; it keeps going and the result is waiting
+  when you come back. Afterwards it loads instantly, and a re-run only pays to read calls that have
+  arrived since.
 
 The app is deliberately **Private** — unlisted, installed by direct link, not submitted for public
 marketplace review. If your account cannot install a private app owned by another developer, use
@@ -64,15 +66,23 @@ detail.
 
 | Step | Detail |
 |---|---|
-| **Ingest** | Pulls the agent's configuration and its Voice AI call logs (`GET /voice-ai/agents/:id`, `GET /voice-ai/dashboard/call-logs`), filtered to the agent under review. |
-| **Analyze** | Classifies each call as success / failure / missed opportunity, then detects recurring issues typed to the brief's taxonomy — missed qualification, poor objection handling, incorrect tone, incomplete booking flow, weak follow-up, policy violations. Every issue cites a verbatim transcript quote. |
-| **Generate** | Produces six test cases from the detected failures — happy-path and edge-case — each with explicit success criteria. |
+| **Ingest** | Pulls the agent's configuration and **every** page of its Voice AI call logs (`GET /voice-ai/agents/:id`, `GET /voice-ai/dashboard/call-logs`), filtered server-side to the agent under review. |
+| **Label** | Reads each transcript once with a cheap model and stores a structured verdict: outcome, twelve dimensions, issue types, one quote. Cached against the call id forever, so a call is never read twice. |
+| **Aggregate** | Turns those labels into scores and frequencies **in code, with no model**. Every figure on the Scorecard is a count over 100% of the calls rather than a statistic over the recent ones. |
+| **Sample** | Picks roughly ten calls worth reading closely: the worst examples of each weak dimension, plus a couple that went well for contrast. |
+| **Analyze** | Explains the recurring issues behind the weak scores, typed to the brief's taxonomy — missed qualification, poor objection handling, incorrect tone, incomplete booking flow, weak follow-up, policy violations. Every issue cites a verbatim transcript quote. |
+| **Generate** | Produces six test cases from those issues — happy-path and edge-case — each with explicit success criteria. |
 | **Evaluate** | Scores every criterion against the agent's current configuration. |
 | **Recommend** | Emits configuration changes for evidence-backed categories only, plus prompt patches. |
 | **Re-evaluate** | Scores the same suite against the patched configuration to produce the before/after delta. |
 
-A representative run over four real transcripts: **11/27 → 26/27 criteria passing, 15 flipped**, with
-all 27 verdicts backed by quotes that appear verbatim in the transcripts.
+The middle three steps are the point. The expensive reasoning no longer scales with the account:
+labelling happens once per call ever, aggregation is arithmetic, and the strong model reads ten
+transcripts whether the agent has taken twenty calls or twenty thousand.
+
+A representative run over a sandbox agent's four transcripts: **11/22 → 22/22 criteria passing, with
+every dimension scored across all four calls** and all verdicts backed by quotes that appear
+verbatim in the transcripts.
 
 ---
 
@@ -83,24 +93,36 @@ and there is no CORS to configure.
 
 ```
 Vue SPA (iframe inside HighLevel)
-        │  fetch, carrying ?locationId
+        │  POST to start, GET to poll
         ▼
 Express (server.js) ── auth.js ──► per-location OAuth token
-        │                └─ ghl.js ──► HighLevel API v2
+        │                └─ ghl.js ──► HighLevel API v2 (all pages)
         │
-        └────── pipeline.js ──► ai.js ──► Claude (3 calls)
-                     │
-                     └──► store.js ──► Redis, or per-key files locally
+        └── jobs.js ──► pipeline.js
+                            │
+              ┌─────────────┼──────────────┬─────────────────┐
+              ▼             ▼              ▼                 ▼
+         labels.js     aggregate.js    sample.js           ai.js
+       Haiku, once     no model —    ~10 worst calls   Sonnet, over the
+        per call        arithmetic                     aggregate + sample
+              │
+              └──► store.js ──► Redis, or per-key files locally
 ```
 
 | File | Responsibility |
 |---|---|
 | `src/auth.js` | Records installs, mints and caches location tokens, resolves credentials per request. |
-| `src/ghl.js` | HighLevel client. Three calls, one normalization step. Reads no environment — credentials are passed in. |
+| `src/ghl.js` | HighLevel client. Paginates the call log fully; reads no environment — credentials are passed in. |
+| `src/framework.js` | The twelve dimensions, the issue taxonomy, and how a pass rate becomes a status. One definition, four consumers. |
+| `src/model.js` | One schema-constrained model call, with fallback, retry and output validation. Shared by the labeller and the synthesizer. |
+| `src/labels.js` | Reads one transcript into a structured verdict and caches it against the call id, forever. |
+| `src/aggregate.js` | Labels → scores, frequencies, outcome mix. Pure functions, no model. |
+| `src/sample.js` | Chooses the handful of calls the strong model actually reads. |
 | `src/ai.js` | `analyze()` and `evaluate()`, with their prompts inline. |
-| `src/pipeline.js` | Orchestrates the three calls, scores, computes the delta, caches the run. |
-| `src/store.js` | Key-value storage for installs and cached analyses. Redis in production, files locally. |
-| `src/server.js` | Four routes plus the static bundle. |
+| `src/pipeline.js` | Orchestrates label → aggregate → sample → synthesize, scores, computes the delta, caches the run. |
+| `src/jobs.js` | Runs an analysis as a background job with single-flight and progress reporting. |
+| `src/store.js` | Key-value storage for installs, labels and cached analyses. Redis in production, files locally. |
+| `src/server.js` | Five routes plus the static bundle. |
 
 ### Multi-tenancy
 
@@ -141,22 +163,71 @@ requires Agency distribution, goes through HighLevel review with a stated SLA of
 forbids loading remote scripts — which rules out serving a Vue bundle at all. For a four-screen
 dashboard it is the wrong surface, and for a short deadline it is not a viable one.
 
-### Which calls are analyzed
+### Which calls are analyzed — all of them
 
-Every call the agent has handled, not only test calls: the ingestion filter is `agentId` plus "has a
-transcript". The 25 most recent are taken, and calls without a transcript are skipped.
+An earlier version read the fifty most recent transcripts and scored them. Every number it showed
+was therefore a sample statistic wearing a fact's clothes: on an agent with 10,000 calls, *"tool
+execution fails in 3 of 50 calls"* says nothing about the other 9,950, and because the window was
+*recent* rather than representative, a serious failure that stopped happening last week vanished
+from the report entirely.
 
-Test calls are labelled as such when they reach the model, because a call where the operator is
-probing their own agent says less about customer experience than the same behaviour in a real one —
-and in an account with a hundred customer calls and a handful of tests, treating them alike would
-skew the recurring-issue frequencies.
+Raising the limit does not fix that. At roughly 750 tokens per transcript, 2,000 calls is about 1.5M
+input tokens in a single request — past the context window, and past the output ceiling long before
+that, because every issue has to carry verbatim citations.
+
+**The sampling was not the flaw. Presenting a sample as a census was.** So the work is split by how
+expensive it is:
+
+- **Every call is read once, by a cheap model.** A transcript is immutable — call `6a709547` yields
+  the same reading today, next month, forever — so the reading is cached against the call id with no
+  expiry and never computed twice. An account with 10,000 calls pays for that once; the next day's 40
+  new calls cost 40 labels and nothing else.
+- **The scores are counted, not estimated.** Aggregation over labels is arithmetic: instant, exact,
+  and over 100% of the record. Adding a call updates the Scorecard without re-running anything
+  expensive.
+- **The strong model reads ten transcripts.** Nobody writes a better prompt patch from 10,000
+  transcripts than from the ten worst, and the aggregate has already established which those are.
+
+The run reports the split — `{ labelled: 12, fromCache: 1228 }` — so the once-only property is
+visible rather than assumed. A non-zero `labelled` on an unchanged account means something is wrong.
+
+A first run on a very large account is capped (`ANALYSIS_MAX_CALLS`, default 500) and the UI says so.
+That is a partial census rather than a biased sample: every one of those calls is read and counted,
+and because labels are permanent the cap is the only thing between a large account and a complete
+picture.
+
+Test calls are marked as such throughout, because a call where the operator is probing their own
+agent says less about customer experience than the same behaviour in a real one — and in an account
+with a hundred customer calls and a handful of tests, treating them alike would skew the frequencies.
+
+### An analysis is a job, not a page load
+
+Nobody watches this run. They open the app, trigger an analysis, leave, and come back — daily,
+weekly, monthly — to see how their agents are doing. Once that is the product, the length of the job
+stops mattering and the honesty of the progress figure starts to.
+
+`POST /api/run/:agentId` therefore returns `202` immediately with a job record; `GET` returns the
+finished run if there is one and the job's status otherwise. The page polls, shows *"labelling call
+340 of 1,240"* — a real fraction, because labelling genuinely happens one call at a time — and says
+plainly that the page can be closed. Reopening it mid-run picks the job back up rather than serving
+the previous analysis.
+
+**Single-flight.** Two people opening the same sub-account must not trigger two analyses: that is
+duplicated spend and a race over the same cache keys. An already-running job is returned rather than
+duplicated, and the claim is taken synchronously so two requests arriving in the same tick cannot
+both win it. A job whose process died — a restart on a free tier, most likely — is reported as
+failed rather than left spinning, because the alternative is a progress bar that never moves again.
+
+Push notification to a user who has closed HighLevel entirely is out of scope: it needs a channel
+this app does not have and scopes it was not granted.
 
 ### Handling a busy model API
 
-A full pass is three sequential calls over several minutes. A transient `overloaded_error` arriving
-mid-stream is retried with increasing backoff, because losing the whole run to a few seconds of
-capacity pressure costs the user the entire result — and a reviewer seeing a failure would
-reasonably conclude the tool is broken.
+Synthesis is three sequential calls over minutes. A transient `overloaded_error` arriving mid-stream
+is retried with increasing backoff, because losing the whole run to a few seconds of capacity
+pressure costs the user the entire result. Labelling retries less patiently and gives up sooner: with
+thousands of calls in flight, one transcript that will not label is cheaper to drop and report than
+to wait on, and the run says how many were dropped.
 
 ### Storage: key-value, not relational
 
@@ -181,13 +252,45 @@ on a free tier the filesystem is wiped whenever the service sleeps, so every vis
 period would pay for the analysis again, and every user would be told to reinstall an app they
 already have.
 
-Minted location tokens carry a TTL matching the token's own lifetime, so they expire rather than
-accumulating as dead keys.
+**Labels are the one thing that must never expire.** `store.set` takes an optional TTL, and it is
+deliberately omitted for labels. A location token expires because it genuinely goes stale; a reading
+of an immutable transcript cannot. A TTL there would quietly reintroduce the re-processing the whole
+design exists to prevent — and it would look like it was working, just getting slowly more
+expensive. Minted location tokens, by contrast, carry a TTL matching the token's own lifetime so
+they expire rather than accumulating as dead keys.
+
+Labels are keyed by `label:<locationId>:<callId>` — never by run, agent or batch — so re-running the
+analysis, or analyzing a different agent in the same account, cannot invalidate them. Only the
+transcript-derived part of a label is cached; the verdicts that depend on the agent's configuration
+are recomputed each run, because a transcript is immutable and an agent's configuration is not.
+Cached labels carry a version, so a change to what a label means invalidates the old ones rather
+than silently mixing two vocabularies into one aggregate.
 
 Postgres was considered and rejected: nothing here is relational, and Render's free tier expires
 after 30 days — the exact window in which a submission might be revisited.
 
-### Why three LLM calls, not six
+### Which model does what
+
+| Tier | Model | Why |
+|---|---|---|
+| Label | `claude-haiku-4-5` | Narrow classification over one transcript — did an action fire, was data captured, did the caller get an answer. Small models are reliable at this, and it sees one transcript per request, so the 200K window is nowhere near a constraint. |
+| Synthesize | `claude-sonnet-5` | Writing issue narratives, test cases and recommendations from a pre-computed aggregate plus ten examples. |
+
+**Splitting the work is what makes a larger model unnecessary here.** Previously one model had to
+read fifty transcripts, find patterns across them, and write everything up. Now the reading is
+Haiku's, the pattern-finding is arithmetic, and the strong model only writes — over a tenth of the
+input, producing less output.
+
+Sonnet 5 thinks adaptively at `high` effort by default, and thinking is generated a token at a time
+like everything else, so across three sequential calls it sets the wall clock. Running synthesis at
+`medium` took a measured run from **367s to 155s** with no visible loss in the narratives or the
+suite. `ANTHROPIC_MODEL` and `ANTHROPIC_EFFORT` keep both choices testable rather than baked in.
+
+Labelling is deliberately **not** batched. One request per label is what keeps a label cacheable in
+isolation and lets a single failure retry without redoing its neighbours; concurrency, not batching,
+is the throughput lever.
+
+### Why three synthesis calls, not six
 
 **Analyze and generate are one call.** They take identical inputs, and test cases should be derived
 from the failures actually observed — splitting them would mean sending the same transcripts twice
@@ -204,9 +307,28 @@ Responses use the Anthropic API's structured outputs, so a malformed response is
 state. That guarantees *shape*, not *substance* — and the format supports no minimum-length
 constraints, so an empty array is schema-valid. A run once came back with zero dimensions, zero
 issues and zero test cases, passed validation, and the evaluate call then invented five test cases
-of its own to score. Each call therefore validates what it received: every dimension scored, six
-test cases, one outcome per transcript, a verdict for every criterion. A response that answers
-nothing is retried, not rendered.
+of its own to score. Each call therefore validates what it received: every dimension judged, six
+test cases, a verdict on every criterion exactly once. A response that answers nothing is retried,
+not rendered.
+
+### The schema is the latency lever
+
+Output tokens are generated one at a time, so they dominate wall-clock; input is processed in
+parallel and barely matters. With structured outputs **the schema decides how much gets written**,
+which makes trimming it the one speed-up that costs no quality. Three things were being written back
+that were already known:
+
+| Waste | Fix |
+|---|---|
+| Every verdict echoed its criterion back verbatim, in both passes | Return `criterionIndex` into the test case's own list; the text is reattached in code |
+| Every verdict carried a `reason`, including the ones that passed | Require it only on failure — a passing criterion needs no justification |
+| The patched pass re-emitted full verdicts with evidence for all 30 criteria | It only needs pass/fail to compute the delta, plus a reason for the criteria that *changed* |
+
+The same principle applies to labels, which return a quote only when the call actually failed. At
+10,000 calls that is the difference between roughly 2M and 1.2M output tokens on a first backfill.
+
+`max_tokens` stays generous regardless — it is a truncation guard, not a budget, and setting it low
+simply breaks long runs. The 32K ceiling truncated this pipeline once already.
 
 ---
 
@@ -237,6 +359,19 @@ present.
 - Configuration analysis, failure detection, test generation, scoring, and recommendations — all
   genuine model output over that real data.
 - The before/after delta — a second scoring pass, not an estimate.
+
+**Counted, not estimated**
+- Framework scores and issue frequencies are arithmetic over every labelled call. When the Scorecard
+  says an agent failed tool execution in 4 of 4 calls, that is a count of 4, not a model's
+  impression of 4. The narrative model is explicitly forbidden from restating frequencies, because
+  it sees a deliberate sample and would be guessing.
+- The four dimensions that matter most for "does this agent actually work" — tool execution and data
+  capture in particular — are decided by fields on the call record rather than by how the call
+  reads. An agent that says it booked an appointment while no action was executed fails tool
+  execution however fluent it sounded. That is what keeps a twelve-dimension rubric from becoming
+  twelve flavours of opinion.
+- A dimension no call exercised is `not_evaluated` with no score, never a zero. If nobody asked for
+  a human, nothing has been learned about escalation.
 
 **Not simulated, and not claimed to be**
 - Test cases are evaluated against configuration and real transcripts. Nothing places a phone call. A
@@ -377,6 +512,33 @@ the token lacks the Voice AI scopes and must be reissued rather than debugged.
 
 To expose a local server to HighLevel: `cloudflared tunnel --url http://localhost:3000`, then use the
 generated hostname in the Custom Page and redirect URLs. Note these hostnames are ephemeral.
+
+### Checking a run against itself
+
+```bash
+npm run verify -- data/kv/run__<locationId>__<agentId>.json
+```
+
+Three things can go wrong in a way that reads as confident and specific while being false, so all
+three are checked mechanically rather than by eye:
+
+1. **A citation that does not appear in the transcript it claims to quote.** A verdict tagged
+   `observed` asserts a measurement; a paraphrase or an invented quote makes the whole report
+   untrustworthy while reading as precise.
+2. **A framework score that disagrees with the issues filed beneath it** — a dimension scored
+   `strong` while carrying a high-severity issue, a score that does not follow from its own pass and
+   fail counts, a `not_evaluated` dimension carrying a number anyway.
+3. **A narrative describing problems the census says are not there.** This is the failure mode
+   created by writing from a sample and counting from the whole, so it is checked directly: an issue
+   filed under a dimension the aggregate calls healthy, or narrated while occurring in zero calls,
+   fails the run.
+
+It also prints the labelling split, which is where the once-only property shows up: on a re-run of
+an unchanged account it must read `labelled 0 of N`.
+
+Environment overrides worth knowing: `ANTHROPIC_MODEL` and `ANTHROPIC_EFFORT` for synthesis,
+`LABEL_MODEL` and `LABEL_CONCURRENCY` for the labeller, and `ANALYSIS_MAX_CALLS` for the first-run
+cap.
 
 ---
 

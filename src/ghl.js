@@ -58,45 +58,92 @@ export async function listAgents(auth) {
   return agents.map((a) => ({ id: a.id, name: a.agentName }));
 }
 
+// The endpoint rejects anything larger with a 422, so this is a hard ceiling
+// rather than a tuning choice: `{"message":["pageSize cannot exceed 50"]}`.
+const PAGE_SIZE = 50;
+
 /**
- * The most recent calls for one agent, newest first.
+ * How many calls this agent has taken, without fetching any of them.
  *
- * Bounded deliberately. Recurring-issue detection needs enough calls to
- * establish frequency, not every call ever taken: an agent with 2,000
- * transcripts would cost roughly 1.5M input tokens per model call, exceed the
- * output ceiling once every issue has to be cited, and take far longer than
- * anyone will wait. Fifty recent calls carry the signal; the count of what
- * exists is returned alongside so the analysis can say what it covered.
+ * The staleness check runs on every page load and must stay one fast request.
+ * Paginating the whole history to discover that nothing has changed would make
+ * opening the page cost more than it saves.
  */
-export async function listCallLogs(auth, agentId, limit = 50) {
-  // agentId filters server-side. Fetching a page of the location's calls and
-  // filtering here would mean an agent whose calls are older than that page
-  // returns nothing — on a busy account, an agent with hundreds of calls would
-  // report as having none.
-  const { callLogs, total } = await get(auth, "/voice-ai/dashboard/call-logs", {
+export async function countCalls(auth, agentId) {
+  const { total, callLogs } = await get(auth, "/voice-ai/dashboard/call-logs", {
     agentId,
-    pageSize: String(limit),
+    page: "1",
+    pageSize: "1",
   });
+  return total ?? callLogs?.length ?? 0;
+}
 
-  const transcripts = callLogs
-    .filter((c) => c.transcript)
-    .map((c) => ({
-      callId: c.id,
-      createdAt: c.createdAt,
-      durationSec: c.duration,
-      summary: c.summary,
-      transcript: c.transcript,
-      // Empty in both cases below is itself evidence: the agent can confirm a
-      // booking in conversation while having triggered no action and collected
-      // no data.
-      actionsExecuted: c.executedCallActions ?? [],
-      dataCollected: c.extractedData ?? {},
-      transferred: c.agentTransferOccurred,
-      isTestCall: c.trialCall,
-    }));
+function normalizeCall(c) {
+  return {
+    callId: c.id,
+    createdAt: c.createdAt,
+    durationSec: c.duration,
+    summary: c.summary,
+    transcript: c.transcript,
+    // Empty in both cases below is itself evidence: the agent can confirm a
+    // booking in conversation while having triggered no action and collected
+    // no data.
+    actionsExecuted: c.executedCallActions ?? [],
+    dataCollected: c.extractedData ?? {},
+    transferred: c.agentTransferOccurred,
+    isTestCall: c.trialCall,
+  };
+}
 
-  // `total` is every call this agent has taken; `transcripts` is the window
-  // analyzed. They differ on a busy agent, and the UI says so rather than
-  // implying the analysis covered everything.
-  return { transcripts, totalCalls: total ?? transcripts.length };
+/**
+ * Every call this agent has taken, newest first.
+ *
+ * Fetching all of them used to be impossible: fifty transcripts was already near
+ * what one model call could read, so the list was bounded and every number the
+ * app showed was a statistic over the most recent window presented as a fact
+ * about the agent. Labelling changed that — a transcript is now read once by a
+ * cheap model and its label cached forever, so the corpus size no longer sets
+ * the size of any single request.
+ *
+ * `limit` caps a first run on a very large account. The labelling of the rest is
+ * incremental by construction, so a capped run is a partial census rather than a
+ * biased sample, and `totalCalls` reports what exists either way.
+ *
+ * agentId filters server-side. Fetching a page of the location's calls and
+ * filtering here would mean an agent whose calls are older than that page
+ * returns nothing — on a busy account, an agent with hundreds of calls would
+ * report as having none.
+ */
+export async function listCallLogs(auth, agentId, limit = Infinity) {
+  const transcripts = [];
+  let total = 0;
+
+  for (let page = 1; ; page++) {
+    const body = await get(auth, "/voice-ai/dashboard/call-logs", {
+      agentId,
+      page: String(page),
+      pageSize: String(PAGE_SIZE),
+    });
+
+    const callLogs = body.callLogs ?? [];
+    total = body.total ?? total;
+
+    // A call with no transcript carries no evidence — it is counted in `total`
+    // but there is nothing to label.
+    transcripts.push(...callLogs.filter((c) => c.transcript).map(normalizeCall));
+
+    // Stop on a short page as well as on the reported total: `total` is the
+    // count of the agent's calls, and a page that comes back smaller than asked
+    // for is the last one regardless of what the count says.
+    if (callLogs.length < PAGE_SIZE) break;
+    if (transcripts.length >= limit) break;
+    if (total && page * PAGE_SIZE >= total) break;
+  }
+
+  return {
+    transcripts: transcripts.slice(0, limit === Infinity ? undefined : limit),
+    // Every call this agent has taken, including any without a transcript, so
+    // the UI can say how much of the record the analysis reached.
+    totalCalls: Math.max(total, transcripts.length),
+  };
 }
