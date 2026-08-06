@@ -40,7 +40,7 @@ function flippedCriteria(baseline, patched, testCases) {
  * those changes applied. Three LLM calls; the second and third share one function.
  */
 export async function run(auth, agentId) {
-  const [agent, transcripts] = await Promise.all([
+  const [agent, { transcripts, totalCalls }] = await Promise.all([
     getAgent(auth, agentId),
     listCallLogs(auth, agentId),
   ]);
@@ -94,6 +94,10 @@ export async function run(auth, agentId) {
     model: [...usedModels].join(" + "),
     agent,
     transcripts,
+    // How many calls this agent has taken in total, against the window analyzed.
+    // They differ on a busy agent, and the UI says so rather than implying the
+    // analysis covered everything.
+    totalCalls,
     analysis: { callOutcomes, framework, issuePatterns },
     testCases,
     baseline: { cases: baseline.cases, score: score(baseline.cases) },

@@ -59,18 +59,27 @@ export async function listAgents(auth) {
 }
 
 /**
- * Call logs for one agent, newest first.
+ * The most recent calls for one agent, newest first.
  *
- * The endpoint is location-scoped rather than agent-scoped, so calls belonging
- * to other agents in the same sub-account come back too and are filtered here.
+ * Bounded deliberately. Recurring-issue detection needs enough calls to
+ * establish frequency, not every call ever taken: an agent with 2,000
+ * transcripts would cost roughly 1.5M input tokens per model call, exceed the
+ * output ceiling once every issue has to be cited, and take far longer than
+ * anyone will wait. Fifty recent calls carry the signal; the count of what
+ * exists is returned alongside so the analysis can say what it covered.
  */
-export async function listCallLogs(auth, agentId, limit = 25) {
-  const { callLogs } = await get(auth, "/voice-ai/dashboard/call-logs", {
+export async function listCallLogs(auth, agentId, limit = 50) {
+  // agentId filters server-side. Fetching a page of the location's calls and
+  // filtering here would mean an agent whose calls are older than that page
+  // returns nothing — on a busy account, an agent with hundreds of calls would
+  // report as having none.
+  const { callLogs, total } = await get(auth, "/voice-ai/dashboard/call-logs", {
+    agentId,
     pageSize: String(limit),
   });
 
-  return callLogs
-    .filter((c) => c.agentId === agentId && c.transcript)
+  const transcripts = callLogs
+    .filter((c) => c.transcript)
     .map((c) => ({
       callId: c.id,
       createdAt: c.createdAt,
@@ -85,4 +94,9 @@ export async function listCallLogs(auth, agentId, limit = 25) {
       transferred: c.agentTransferOccurred,
       isTestCall: c.trialCall,
     }));
+
+  // `total` is every call this agent has taken; `transcripts` is the window
+  // analyzed. They differ on a busy agent, and the UI says so rather than
+  // implying the analysis covered everything.
+  return { transcripts, totalCalls: total ?? transcripts.length };
 }

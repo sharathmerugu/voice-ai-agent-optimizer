@@ -115,7 +115,7 @@ app.post(
     // the user decide. Listing call logs is one fast request; re-analyzing is
     // three model calls and several minutes.
     const analyzed = new Set(cached.transcripts.map((t) => t.callId));
-    const current = await listCallLogs(auth, req.params.agentId);
+    const { transcripts: current } = await listCallLogs(auth, req.params.agentId);
     const newCalls = current.filter((c) => !analyzed.has(c.callId)).length;
 
     res.json(newCalls ? { ...cached, newCallsSince: newCalls } : cached);

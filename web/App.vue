@@ -119,7 +119,12 @@ onMounted(async () => {
       <component :is="TABS.find(([id]) => id === activeTab)[2]" :run="run" />
 
       <p class="provenance muted">
-        Analyzed {{ run.transcripts.length }} call transcripts with
+        Analyzed
+        <template v-if="run.totalCalls > run.transcripts.length">
+          the {{ run.transcripts.length }} most recent of {{ run.totalCalls }} calls
+        </template>
+        <template v-else>{{ run.transcripts.length }} call transcripts</template>
+        with
         <code>{{ run.model || "an unrecorded model" }}</code>
         on {{ new Date(run.generatedAt).toLocaleString() }}. Scores are not comparable across
         different models.
