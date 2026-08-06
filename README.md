@@ -13,10 +13,10 @@ the public API, and recommends changes the user applies themselves.
 
 **1. Watch the demo — 3 minutes, no setup**
 
-&nbsp;&nbsp;&nbsp;&nbsp;▶ *(Loom link)*
+&nbsp;&nbsp;&nbsp;&nbsp;▶ **[Watch the demo](https://www.loom.com/share/6b1ec3cee32e48a39dcaa0fbb956023b)**
 
 Shows the optimizer running inside HighLevel against a real sandbox agent: the recurring issues it
-found, the test suite it generated, its recommendations, and the measured before/after.
+found, the test suite it generated, its recommendations, and the before/after.
 
 **2. Install it into your own HighLevel sub-account**
 
