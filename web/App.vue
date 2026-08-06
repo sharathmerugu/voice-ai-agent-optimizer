@@ -225,6 +225,17 @@ onUnmounted(stopPolling);
         revealing, by <code>{{ run.model || "an unrecorded model" }}</code> on
         {{ new Date(run.generatedAt).toLocaleString() }}. Scores are not comparable across
         different models.
+        <template v-if="run.citations">
+          Every one of the {{ run.citations.checked }} quotes below was checked against the
+          transcript it cites before this page was written<template v-if="run.citations.rejected">
+            — {{ run.citations.rejected }}
+            {{ run.citations.rejected === 1 ? "did not match and was withdrawn" : "did not match and were withdrawn" }}<template
+              v-if="run.citations.issuesDropped"
+            >, taking {{ run.citations.issuesDropped }}
+              {{ run.citations.issuesDropped === 1 ? "issue" : "issues" }} with them</template
+            ></template
+          >.
+        </template>
       </p>
     </template>
   </div>

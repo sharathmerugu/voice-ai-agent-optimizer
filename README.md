@@ -129,7 +129,10 @@ Express (server.js) ── auth.js ──► per-location OAuth token
 The frontend reads `locationId` from its own URL — HighLevel substitutes `{{location.id}}` into the
 Custom Page address at load — and sends it with every request. The backend resolves credentials from
 that id, so one deployment serves any number of installs and no request is ever answered with
-credentials belonging to a different account.
+credentials belonging to a different account. It does **not** prove the caller is inside that
+sub-account — the id arrives as a query parameter and is taken at its word. See
+[What is real vs what is not](#what-is-real-vs-what-is-not) for why, and for the Custom Page SSO
+exchange that closes it.
 
 **HighLevel installs a sub-account app in one of two shapes, and both arrive through the same
 callback.** This was the single most surprising thing in the integration:
@@ -191,10 +194,15 @@ expensive it is:
 The run reports the split — `{ labelled: 12, fromCache: 1228 }` — so the once-only property is
 visible rather than assumed. A non-zero `labelled` on an unchanged account means something is wrong.
 
-A first run on a very large account is capped (`ANALYSIS_MAX_CALLS`, default 500) and the UI says so.
-That is a partial census rather than a biased sample: every one of those calls is read and counted,
-and because labels are permanent the cap is the only thing between a large account and a complete
-picture.
+A run is capped at `ANALYSIS_MAX_CALLS` (default 500) and the UI says so when it bites. That is a
+census of a window rather than an estimate over everything: each of those 500 is read and counted
+individually, and the Scorecard says "the 500 most recent of 10,000" rather than implying it saw
+them all.
+
+**The window does not crawl backwards.** Each run fetches the newest N, so new calls enter it and
+old ones fall out; calls beyond the cap are never read. Raising the cap is currently the only way to
+reach further back, and because labels are permanent, raising it only pays for the calls it newly
+reaches. Backfilling the rest in the background is the obvious next step and is not built.
 
 Test calls are marked as such throughout, because a call where the operator is probing their own
 agent says less about customer experience than the same behaviour in a real one — and in an account
@@ -349,6 +357,24 @@ Instead every criterion verdict carries a tag:
 inference, labelled as such in the UI. The tag is an enum in the response schema, so it is always
 present.
 
+**And the tag is checked, not trusted.** Before a run is stored, every quote in it — issue evidence,
+`observed` verdict evidence, recommendation evidence — is matched against the transcripts it claims
+to come from ([`src/cite.js`](src/cite.js)). A quote that does not match costs its claim: an
+`observed` verdict is demoted to `predicted` and loses its evidence, an issue that ends up with no
+real quote is dropped entirely, and a recommendation keeps its argument but loses the citation. The
+count of what was checked and what was withdrawn is stored on the run and shown at the foot of every
+screen.
+
+This exists because it caught something. In an earlier run, an `observed` verdict quoted the agent
+as offering to *"try a different day"* where the transcript says *"try a different week"* — a
+single word, in a quote that read as precise, presented as a measurement. The instruction not to
+compose quotes was already in the system prompt; instructions are not a guarantee, and this is the
+same rule enforced in code.
+
+The check allows a citation to skip the other speaker's turns (an interruption splits one sentence
+across two `bot:` turns) and to join non-adjacent passages across an ellipsis. It does not allow a
+reordering, a paraphrase, or an invented syllable.
+
 ---
 
 ## What is real vs what is not
@@ -358,7 +384,10 @@ present.
   calls and retrieved through the live Voice AI API.
 - Configuration analysis, failure detection, test generation, scoring, and recommendations — all
   genuine model output over that real data.
-- The before/after delta — a second scoring pass, not an estimate.
+- Every quote on every screen — machine-checked against the transcript it cites before the run is
+  stored, with anything that does not match withdrawn and counted.
+- The **before** score — the generated suite scored against the agent's live configuration and its
+  real transcripts.
 
 **Counted, not estimated**
 - Framework scores and issue frequencies are arithmetic over every labelled call. When the Scorecard
@@ -377,8 +406,35 @@ present.
 - Test cases are evaluated against configuration and real transcripts. Nothing places a phone call. A
   `predicted` verdict is a reasoned expectation, not a measurement, and is labelled that way
   everywhere it appears.
+- **The after score is predicted, and the UI says so on the card.** It is a real second scoring pass
+  — the same suite, the same transcripts, the same evaluator — but against a configuration that has
+  never taken a call. The honest description is a reasoned expectation of what the changes buy,
+  which is the most any tool can offer while no API can drive a Voice AI conversation.
+
+  Three things bound how far that can drift, and none of them make it a measurement:
+
+  - The second pass is anchored to the first, and is asked what changed rather than asked to
+    re-derive a reading of the transcripts.
+  - Regressions are reported, not only improvements. A screen that can only deliver good news is
+    not delivering any.
+  - Model and temperature recommendations are deliberately excluded from the second pass. Their
+    effect cannot be read off a configuration, so crediting them would be inventing the improvement.
+    They appear on the same screen, marked as not counted.
+
+  What would make it a measurement is running the generated cases as real conversations against the
+  patched agent and scoring the result. That is the next thing I would build, and it needs a Voice
+  AI test API that does not exist today.
 
 **Out of scope by design**
+- **The page trusts its own `locationId`, and that is a real gap.** HighLevel substitutes
+  `{{location.id}}` into the Custom Page URL and the frontend forwards it; the backend resolves
+  credentials for exactly that location and refuses any location no install covers. What it does not
+  do is verify that the person asking is inside that sub-account — so anyone who knows a location id
+  can request that account's analysis directly from the deployed URL. The fix is HighLevel's Custom
+  Page SSO: the iframe requests encrypted user data over `postMessage`, the backend decrypts it with
+  the app's SSO key, and the location comes from the decrypted payload rather than from the query
+  string. That is the first thing I would add before this served a real customer, and it is left out
+  here rather than half-built.
 - **No write-back.** The optimizer recommends; the user applies changes in HighLevel. Patches are
   copy-ready.
 - **Cold starts.** Installs and cached analyses live in Redis and survive restarts, but a free-tier
@@ -424,8 +480,9 @@ by the token exchange, which fails *after* a successful-looking install.
 
 **The generated install link omits `client_id`.** The Developer Portal's install link carries only
 `version_id`; the install page then requests `installationDetails?appId=` with an empty value and
-fails with `CastError: Cast to ObjectId failed for value ""`. Appending `client_id=<app id>` fixes
-it. See the install steps below.
+fails with `CastError: Cast to ObjectId failed for value ""`. Appending the **Client ID** from
+Advanced Settings → Auth — the suffixed one, per the note above — fixes it. See the install steps
+below.
 
 **A draft app must be Private to install.** Leaving App type as `Public` disables the install button
 with *"This integration cannot be added, please contact the developer!"* — public apps require review
@@ -452,7 +509,12 @@ In the [Developer Portal](https://marketplace.gohighlevel.com): **My Apps → Cr
 | Who can install | Everyone | Profile → Listing Configuration |
 | Custom Page URL | `https://voice-ai-agent-optimizer-ofae.onrender.com/?locationId={{location.id}}`, placed in the left navigation | Modules → Custom Page |
 | Redirect URL | `https://voice-ai-agent-optimizer-ofae.onrender.com/oauth/callback` | Advanced Settings → Auth |
-| Scope | `locations.readonly` | Advanced Settings → Auth |
+| Scopes | `locations.readonly`, `voice-ai-dashboard.readonly`, `voice-ai-agents.readonly`, `voice-ai-agent-goals.readonly` | Advanced Settings → Auth |
+
+All four are required. Scopes are fixed at token-grant time, so a missing one cannot be added later
+without redoing every install — the old token keeps its old permissions and 403s on the Voice AI
+endpoints.
+
 
 `{{location.id}}` is a literal HighLevel template variable — type it exactly. Copy the **Client ID**
 and **Client Secret** from Advanced Settings → Auth.
@@ -479,10 +541,13 @@ Take the install link from **Advanced Settings → Auth**, append `client_id`, a
 https://marketplace.gohighlevel.com/v2/oauth/chooselocation
   ?response_type=code
   &redirect_uri=https%3A%2F%2Fvoice-ai-agent-optimizer-ofae.onrender.com%2Foauth%2Fcallback
-  &scope=locations.readonly
-  &client_id=<your app id>
+  &scope=locations.readonly+voice-ai-dashboard.readonly+voice-ai-agents.readonly+voice-ai-agent-goals.readonly
+  &client_id=<your client id>
   &version_id=<your version id>
 ```
+
+`client_id` is the **Client ID** from Advanced Settings → Auth — the app id plus a suffix, not the
+bare app id.
 
 Choose the sub-account, approve, and the callback stores a token for that location. Open the
 sub-account and choose **Voice AI Optimizer** from the left navigation.
@@ -524,7 +589,10 @@ three are checked mechanically rather than by eye:
 
 1. **A citation that does not appear in the transcript it claims to quote.** A verdict tagged
    `observed` asserts a measurement; a paraphrase or an invented quote makes the whole report
-   untrustworthy while reading as precise.
+   untrustworthy while reading as precise. The pipeline now applies this same check before storing a
+   run, so on a current run this reports clean by construction — it is kept as an outside audit that
+   re-derives the corpus from the stored run and assumes nothing about the pipeline having done its
+   job, and as the only way to check a run written by an older version.
 2. **A framework score that disagrees with the issues filed beneath it** — a dimension scored
    `strong` while carrying a high-severity issue, a score that does not follow from its own pass and
    fail counts, a `not_evaluated` dimension carrying a number anyway.

@@ -4,6 +4,7 @@ import { labelAll } from "./labels.js";
 import { aggregate } from "./aggregate.js";
 import { selectSample } from "./sample.js";
 import { analyze, evaluate } from "./ai.js";
+import { corpusOf, cites } from "./cite.js";
 
 // Runs are keyed per location and agent: one deployment serves many installs, and
 // a location may have several Voice AI agents whose results must not be confused
@@ -23,12 +24,23 @@ const runKey = (locationId, agentId) => `run:${locationId}:${agentId}`;
 // written by the design that scored the fifty most recent calls, and they have
 // no `coverage` or `aggregate` at all. Serving one to the current page would
 // throw on the first render, for every user with a cached analysis.
-const RUN_VERSION = 2;
+//
+// Version 3 adds `citations`, and with it the guarantee that every quote in the
+// run has been traced to a transcript. A version 2 run carries quotes that were
+// never checked — one of them, in the run this was built from, altered the
+// agent's words — so those are recomputed rather than shown under a promise
+// they do not meet.
+const RUN_VERSION = 3;
 
-// A first run on a very large account is capped, and the UI says so. This is a
-// partial census rather than a biased sample — every one of these calls is
-// labelled and counted, and because labels are permanent the cap is the only
-// thing standing between a 10,000-call account and a complete picture.
+// How many calls one run will read. Below this, the analysis covers every call
+// the agent has taken; above it, the newest N — and the UI says which, so a
+// window is never presented as the whole record.
+//
+// Note what this does not do: `listCallLogs` pages newest-first, so the window
+// slides forward as calls arrive rather than crawling backwards. Calls beyond
+// the cap are never read at all, and re-running does not change that. Raising
+// the cap is the only way to reach further back today; backfilling the older
+// calls in the background is the obvious next step and is not built.
 const MAX_CALLS = Number(process.env.ANALYSIS_MAX_CALLS) || 500;
 
 export async function readRun(locationId, agentId) {
@@ -62,24 +74,123 @@ function hydrate(cases, testCases) {
   });
 }
 
-/** Criteria that fail on the current configuration and pass on the patched one. */
-function flippedCriteria(baseline, patched, testCases) {
+/**
+ * A quote checker bound to one run's sampled transcripts.
+ *
+ * Every quote the user sees is a claim that the agent, or the caller, said
+ * exactly this. The models are instructed to copy rather than compose, and
+ * mostly do — but "mostly" is not a property a report can be built on, and a
+ * near-miss is the worst kind: it reads as precise while being false. The run
+ * that prompted this changed the agent's "try a different week" into "try a
+ * different day" and presented it as a measurement.
+ *
+ * So the instruction is backed by a check. `stats` is stored on the run, which
+ * turns the guarantee into something the reader can see rather than take on
+ * trust.
+ */
+function checker(sample) {
+  const corpus = corpusOf(sample);
+  const stats = { checked: 0, rejected: 0, issuesDropped: 0 };
+
+  const traceable = (quote) => {
+    stats.checked++;
+    const ok = Boolean(quote) && cites(corpus, quote);
+    if (!ok) stats.rejected++;
+    return ok;
+  };
+
+  return { stats, traceable };
+}
+
+/**
+ * An issue keeps only the quotes that are real, and an issue with none left is
+ * not reported at all — the analyst's own rule is that what cannot be quoted may
+ * not be claimed, and this is that rule enforced rather than requested.
+ */
+function gateIssues(issues, { traceable, stats }) {
+  const kept = issues
+    .map((issue) => ({ ...issue, evidence: issue.evidence.filter(traceable) }))
+    .filter((issue) => issue.evidence.length);
+
+  stats.issuesDropped = issues.length - kept.length;
+  return kept;
+}
+
+/**
+ * An `observed` verdict that cannot be quoted is demoted to `predicted`.
+ *
+ * Not deleted: the verdict itself may well be right, and dropping it would leave
+ * a criterion unscored and the suite total moving between runs for reasons that
+ * have nothing to do with the agent. What it loses is the claim to have been
+ * measured — which is exactly the claim the missing quote fails to support.
+ */
+function gateCases(cases, { traceable }) {
+  return cases.map((c) => ({
+    ...c,
+    verdicts: c.verdicts.map((v) =>
+      v.tag === "observed" && !traceable(v.evidence)
+        ? { ...v, tag: "predicted", evidence: undefined }
+        : v,
+    ),
+  }));
+}
+
+/**
+ * A recommendation survives an unquotable citation, minus the citation.
+ *
+ * Its rationale is an argument from the configuration and the scorecard, both of
+ * which stand on their own. Only the quote is withdrawn.
+ */
+function gateRecommendations(recommendations, { traceable }) {
+  return recommendations.map((r) =>
+    r.evidence && !traceable(r.evidence) ? { ...r, evidence: undefined } : r,
+  );
+}
+
+/**
+ * Criteria whose verdict moved between the two evaluations — in both directions.
+ *
+ * Reporting only the improvements would make the before/after screen structurally
+ * incapable of delivering bad news, which is the same as making it worthless: a
+ * measurement that can only come out one way is not a measurement. A patch that
+ * fixes four criteria and breaks one is a real result and the user is entitled to
+ * decide what to do about it.
+ *
+ * The score already reflects a regression — it is a count over the same verdicts
+ * — so this is about what the page says, not what it computes.
+ */
+function movedCriteria(baseline, patched, testCases) {
   const nameOf = (id) => testCases.find((tc) => tc.id === id)?.name ?? id;
 
-  return baseline.flatMap((before) => {
-    const after = patched.find((c) => c.id === before.id);
-    if (!after) return [];
+  const moved = (was, becomes) =>
+    baseline.flatMap((before) => {
+      const after = patched.find((c) => c.id === before.id);
+      if (!after) return [];
 
-    return before.verdicts
-      .filter((v) => !v.pass)
-      .filter((v) => after.verdicts.find((a) => a.criterionIndex === v.criterionIndex)?.pass)
-      .map((v) => ({ caseId: before.id, caseName: nameOf(before.id), criterion: v.criterion }));
-  });
+      return before.verdicts
+        .filter((v) => v.pass === was)
+        .flatMap((v) => {
+          const now = after.verdicts.find((a) => a.criterionIndex === v.criterionIndex);
+          if (now?.pass !== becomes) return [];
+
+          return {
+            caseId: before.id,
+            caseName: nameOf(before.id),
+            criterion: v.criterion,
+            // The patched pass is asked for a reason only where its verdict
+            // differs from the baseline, which is exactly this set.
+            reason: now.reason ?? "",
+          };
+        });
+    });
+
+  return { flipped: moved(false, true), regressed: moved(true, false) };
 }
 
 /**
  * Label every call, count what the labels say, choose the calls worth reading
- * closely, then synthesize.
+ * closely, synthesize, then check every quote the synthesis produced against the
+ * transcripts it claims to be quoting.
  *
  * The expensive reasoning no longer scales with the corpus: labelling is once
  * per call ever, aggregation is arithmetic, and synthesis sees ten transcripts
@@ -133,11 +244,18 @@ export async function run(auth, agentId, { onProgress } = {}) {
   // Scorecard shows, and every issue is filed under exactly one dimension.
   const failuresPerDimension = new Map(agg.framework.map((d) => [d.dimension, d.callsAffected]));
 
-  const issues = issuePatterns.map((p) => ({
-    ...p,
-    frequency: failuresPerDimension.get(p.dimension) ?? 0,
-    coverage: agg.callsScored,
-  }));
+  // Bound to the sample, because the sample is what the synthesizer was shown
+  // and therefore the only thing it can honestly be quoting.
+  const citations = checker(sample);
+
+  const issues = gateIssues(
+    issuePatterns.map((p) => ({
+      ...p,
+      frequency: failuresPerDimension.get(p.dimension) ?? 0,
+      coverage: agg.callsScored,
+    })),
+    citations,
+  );
 
   const baseline = await evaluate({
     agent,
@@ -147,15 +265,28 @@ export async function run(auth, agentId, { onProgress } = {}) {
     recommend: true,
     usedModels,
   });
-  const baselineCases = hydrate(baseline.cases, testCases);
+  const baselineCases = gateCases(hydrate(baseline.cases, testCases), citations);
+  const recommendations = gateRecommendations(baseline.recommendations, citations);
 
-  // Prompt and guardrail recommendations are delivered as prompt patches; the rest
-  // are changes to the agent's setup. Both have to reach the second evaluation, or
-  // the measured improvement would only ever reflect rewording — which is the thing
-  // this tool exists to move past.
-  const configChanges = baseline.recommendations.filter(
-    (r) => !["prompt", "guardrails"].includes(r.category),
+  // Prompt and guardrail recommendations are delivered as prompt patches; most of
+  // the rest are changes to the agent's setup. Both have to reach the second
+  // evaluation, or the measured improvement would only ever reflect rewording —
+  // which is the thing this tool exists to move past.
+  //
+  // Model and temperature are held back, and the distinction is the whole reason
+  // this filter is a list rather than a negation. A wired booking action or a
+  // populated knowledge base changes what the agent can do, and an evaluator can
+  // reason about that from the configuration. "Lower the temperature" changes how
+  // it behaves in a way nobody can predict without running it — so scoring the
+  // patched configuration as if the change had already worked would be inventing
+  // the improvement this tool exists to measure. They are still recommended, and
+  // the UI says they are not counted in the after score.
+  const UNSCORABLE = ["model", "temperature"];
+
+  const configChanges = recommendations.filter(
+    (r) => !["prompt", "guardrails", ...UNSCORABLE].includes(r.category),
   );
+  const unscoredChanges = recommendations.filter((r) => UNSCORABLE.includes(r.category));
 
   const patched = await evaluate({
     agent,
@@ -191,6 +322,11 @@ export async function run(auth, agentId, { onProgress } = {}) {
       capped: totalCalls > calls.length,
     },
 
+    // How much of the report was checkable, and how much of it was thrown away
+    // for failing the check. Shown in the UI: a report that says every quote in
+    // it was traced back to a transcript has to say who counted.
+    citations: citations.stats,
+
     aggregate: agg,
     // Only the calls the strong model read are stored. Keeping all of them would
     // put a megabyte of transcript in every cached run to no purpose — the
@@ -199,11 +335,12 @@ export async function run(auth, agentId, { onProgress } = {}) {
     issues,
     testCases,
     baseline: { cases: baselineCases, score: score(baselineCases) },
-    recommendations: baseline.recommendations,
+    recommendations,
     patches: baseline.patches,
     configChanges,
+    unscoredChanges,
     patched: { cases: patchedCases, score: score(patchedCases) },
-    flipped: flippedCriteria(baselineCases, patchedCases, testCases),
+    ...movedCriteria(baselineCases, patchedCases, testCases),
   };
 
   await store.set(runKey(auth.locationId, agentId), result);

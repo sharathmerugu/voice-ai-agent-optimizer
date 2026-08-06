@@ -10,8 +10,16 @@
 //      which is the shape of this system.
 //
 //   npm run verify -- data/kv/run__<locationId>__<agentId>.json
+//
+// The pipeline now runs the same citation check before storing a run, so (1)
+// should come back clean on anything written by the current version. This stays
+// as an external audit rather than being deleted with the bug it caught: it
+// re-derives the corpus from the stored run and makes no assumption that the
+// pipeline did its job, and it is the only check that covers a run written by an
+// older version.
 import { readFileSync } from "node:fs";
 import { DIMENSION_IDS, isWeak } from "./framework.js";
+import { corpusOf, cites as citesIn } from "./cite.js";
 
 const file = process.argv[2];
 if (!file) {
@@ -21,71 +29,8 @@ if (!file) {
 
 const run = JSON.parse(readFileSync(file, "utf8"));
 
-// The model reproduces the words faithfully but does not always preserve the
-// original unicode punctuation, so compare on normalized text.
-const normalize = (s) =>
-  s
-    .replace(/[‘’]/g, "'")
-    .replace(/[“”]/g, '"')
-    .replace(/—/g, "-")
-    .replace(/\s+/g, " ")
-    .trim();
-
-/**
- * Each speaker's own words, in order, with the other's removed.
- *
- * An interruption splits the agent's sentence across two `bot:` turns with a
- * `human:` turn wedged between them — so quoting what the agent actually said
- * produces text that appears nowhere in the transcript as written. Quoting it
- * *with* the interruption spliced back in would be worse.
- *
- * This is a real loosening and worth naming: a quote may now skip over the
- * caller's words. It may not skip over the agent's, reorder anything, or
- * invent a syllable, which is what the check is for.
- */
-const speakerStream = (transcript, speaker) =>
-  transcript
-    .split(/\n(?=bot:|human:)/)
-    .filter((turn) => turn.startsWith(`${speaker}:`))
-    .map((turn) => turn.slice(speaker.length + 1))
-    .join("");
-
-// Evidence may cite a transcript, or a recorded field — four framework dimensions
-// are judged from what the call actually did rather than what it said. Both are
-// checkable; both are included here.
-const corpus = normalize(
-  run.sample
-    .map(
-      ({ call }) =>
-        `${call.transcript}\n` +
-        `${speakerStream(call.transcript, "bot")}\n` +
-        `${speakerStream(call.transcript, "human")}\n` +
-        `Actions the agent actually triggered: ${call.actionsExecuted.length ? call.actionsExecuted.join(", ") : "none"}\n` +
-        `Data the agent actually captured: ${Object.keys(call.dataCollected).length ? JSON.stringify(call.dataCollected) : "none"}\n` +
-        `Transferred to a human: ${call.transferred ? "yes" : "no"}`,
-    )
-    .join("\n"),
-);
-
-// A citation may join passages that are not adjacent — with an ellipsis, a
-// slash, or a line break where two turns were quoted together. Each fragment
-// still has to be real; only the seam between them is allowed to be invented.
-//
-// Fragments shorter than this are dropped rather than checked: a stray "bot:"
-// or a three-word connector matches almost any transcript, so requiring it
-// proves nothing and rejecting it would fail honest quotes.
-const MEANINGFUL = 12;
-
-const fragments = (quote) =>
-  quote
-    .split(/\s*(?:\.\.\.|…|\/|\n)\s*/)
-    .map(normalize)
-    .filter((f) => f.length > MEANINGFUL);
-
-const cites = (quote) => {
-  const parts = fragments(quote);
-  return parts.length ? parts.every((p) => corpus.includes(p)) : corpus.includes(normalize(quote));
-};
+const corpus = corpusOf(run.sample);
+const cites = (quote) => citesIn(corpus, quote);
 
 const failures = [];
 let checked = 0;
